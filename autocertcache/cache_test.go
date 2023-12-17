@@ -42,19 +42,34 @@ func TestCache(t *testing.T) {
 	defer mk.Wipe()
 	cache := autocertcache.New("autocert", storage.New(t.TempDir(), mk))
 
+	if v, err := cache.Keys(ctx); err != nil || len(v) != 0 {
+		t.Errorf("cache.Keys() = %q, %v, want [], nil", v, err)
+	}
 	if v, err := cache.Get(ctx, "foo"); err != autocert.ErrCacheMiss || v != nil {
 		t.Errorf("cache.Get(foo) = %v, %v, want nil, ErrCacheMiss", v, err)
 	}
 	if err := cache.Put(ctx, "foo", []byte("bar")); err != nil {
 		t.Errorf("cache.Put(foo, bar) = %v", err)
 	}
+	if err := cache.Put(ctx, "bar", []byte("baz")); err != nil {
+		t.Errorf("cache.Put(bar, baz) = %v", err)
+	}
 	if v, err := cache.Get(ctx, "foo"); err != nil || string(v) != "bar" {
 		t.Errorf("cache.Get(foo) = %q, %v, want bar, nil", v, err)
+	}
+	if v, err := cache.Keys(ctx); err != nil || len(v) != 2 || v[0] != "bar" || v[1] != "foo" {
+		t.Errorf("cache.Keys() = %q, %v, want [bar foo], nil", v, err)
 	}
 	if err := cache.Delete(ctx, "foo"); err != nil {
 		t.Errorf("cache.Delete(foo) = %v", err)
 	}
 	if v, err := cache.Get(ctx, "foo"); err != autocert.ErrCacheMiss || v != nil {
 		t.Errorf("cache.Get(foo) = %v, %v, want nil, ErrCacheMiss", v, err)
+	}
+	if err := cache.DeleteKeys(ctx, []string{"bar"}); err != nil {
+		t.Errorf("cache.DeleteKeys([bar]) = %v", err)
+	}
+	if v, err := cache.Get(ctx, "bar"); err != autocert.ErrCacheMiss || v != nil {
+		t.Errorf("cache.Get(bar) = %v, %v, want nil, ErrCacheMiss", v, err)
 	}
 }

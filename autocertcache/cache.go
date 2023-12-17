@@ -26,6 +26,7 @@ package autocertcache
 import (
 	"context"
 	"encoding/base64"
+	"sort"
 
 	"github.com/c2FmZQ/storage"
 	"golang.org/x/crypto/acme/autocert"
@@ -96,4 +97,36 @@ func (c *Cache) Delete(_ context.Context, key string) error {
 	}
 	delete(cc.Entries, key)
 	return commit(true, nil)
+}
+
+// DeleteKeys deletes a list of cached entries.
+func (c *Cache) DeleteKeys(_ context.Context, keys []string) error {
+	c.storage.Logger().Debugf("Cache.DeleteKeys(%q)", keys)
+	var cc cacheContent
+	commit, err := c.storage.OpenForUpdate(c.fileName, &cc)
+	if err != nil {
+		return err
+	}
+	if cc.Entries == nil {
+		cc.Entries = make(map[string]string)
+	}
+	for _, key := range keys {
+		delete(cc.Entries, key)
+	}
+	return commit(true, nil)
+}
+
+// Keys returns all the cache keys.
+func (c *Cache) Keys(_ context.Context) ([]string, error) {
+	c.storage.Logger().Debug("Cache.Keys()")
+	var cc cacheContent
+	if err := c.storage.ReadDataFile(c.fileName, &cc); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(cc.Entries))
+	for k := range cc.Entries {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys, nil
 }

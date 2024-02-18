@@ -31,11 +31,14 @@ import (
 	"log"
 	"os"
 	"runtime"
+
+	"github.com/c2FmZQ/tpm"
 )
 
 const (
 	AES256           int = iota // AES256-GCM, AES256-CBC+HMAC-SHA256, PBKDF2.
 	Chacha20Poly1305            // Chacha20Poly1305, Argon2.
+	AES256WithTPM               // Like AES256, with masterkey on TPM.
 
 	DefaultAlgo = AES256
 	PickFastest = -1
@@ -77,6 +80,8 @@ type Option struct {
 	alg        *int
 	logger     Logger
 	strictWipe *bool
+	tpm        *tpm.TPM
+	passphrase []byte
 }
 
 // WithAlgo specifies the cryptographic algorithm to use.
@@ -96,6 +101,12 @@ func WithStrictWipe(v bool) Option {
 	return Option{strictWipe: &v}
 }
 
+// WithTPM specifies that the master key should be in the Trusted Platform
+// Module (TPM).
+func WithTPM(tpm *tpm.TPM) Option {
+	return Option{tpm: tpm}
+}
+
 // CreateMasterKey creates a new master key.
 func CreateMasterKey(opts ...Option) (MasterKey, error) {
 	alg := DefaultAlgo
@@ -111,7 +122,7 @@ func CreateMasterKey(opts ...Option) (MasterKey, error) {
 		}
 	}
 	switch alg {
-	case AES256:
+	case AES256, AES256WithTPM:
 		return CreateAESMasterKey(opts...)
 	case Chacha20Poly1305:
 		return CreateChacha20Poly1305MasterKey(opts...)
@@ -130,7 +141,7 @@ func ReadMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey, e
 		return nil, ErrUnexpectedAlgo
 	}
 	switch b[0] {
-	case 1: // AES256
+	case 1, 3: // AES256 or AES256WithTPM
 		return ReadAESMasterKey(passphrase, file, opts...)
 	case 2: // Chacha20Poly1305
 		return ReadChacha20Poly1305MasterKey(passphrase, file, opts...)

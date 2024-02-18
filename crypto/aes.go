@@ -38,6 +38,8 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"github.com/c2FmZQ/tpm"
+	"golang.org/x/crypto/cryptobyte"
 	"golang.org/x/crypto/pbkdf2"
 )
 
@@ -58,6 +60,8 @@ type AESKey struct {
 
 	logger     Logger
 	strictWipe bool
+	tpmKey     *tpm.Key
+	tpmCtx     []byte
 }
 
 func (k *AESKey) Logger() Logger {
@@ -100,12 +104,16 @@ type AESMasterKey struct {
 func CreateAESMasterKey(opts ...Option) (MasterKey, error) {
 	var logger Logger = defaultLogger{}
 	var strictWipe bool
+	var useTPM *tpm.TPM
 	for _, opt := range opts {
 		if opt.logger != nil {
 			logger = opt.logger
 		}
 		if opt.strictWipe != nil {
 			strictWipe = *opt.strictWipe
+		}
+		if opt.tpm != nil {
+			useTPM = opt.tpm
 		}
 	}
 	b := make([]byte, 64)
@@ -115,7 +123,20 @@ func CreateAESMasterKey(opts ...Option) (MasterKey, error) {
 	key := aesKeyFromBytes(b)
 	key.logger = logger
 	key.strictWipe = strictWipe
-	return &AESMasterKey{key}, nil
+	mk := &AESMasterKey{key}
+	if useTPM != nil {
+		tpmctx, err := useTPM.CreateKey()
+		if err != nil {
+			return nil, err
+		}
+		tpmkey, err := useTPM.Key(tpmctx)
+		if err != nil {
+			return nil, err
+		}
+		mk.tpmKey = tpmkey
+		mk.tpmCtx = tpmctx
+	}
+	return mk, nil
 }
 
 // CreateAESMasterKeyForTest creates a new master key to tests.
@@ -135,12 +156,16 @@ func CreateAESMasterKeyForTest() (MasterKey, error) {
 func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey, error) {
 	var logger Logger = defaultLogger{}
 	var strictWipe bool
+	var useTPM *tpm.TPM
 	for _, opt := range opts {
 		if opt.logger != nil {
 			logger = opt.logger
 		}
 		if opt.strictWipe != nil {
 			strictWipe = *opt.strictWipe
+		}
+		if opt.tpm != nil {
+			useTPM = opt.tpm
 		}
 	}
 	b, err := os.ReadFile(file)
@@ -150,14 +175,28 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 	if len(b) < 64 {
 		return nil, ErrDecryptFailed
 	}
-	version, b := b[0], b[1:]
-	if version != 1 {
+	str := cryptobyte.String(b)
+	var version uint8
+	if !str.ReadUint8(&version) {
+		return nil, ErrDecryptFailed
+	}
+	if version != 1 && version != 3 {
 		logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
-	salt, b := b[:16], b[16:]
-	numIter, b := int(binary.BigEndian.Uint32(b[:4])), b[4:]
-	dk := pbkdf2.Key(passphrase, salt, numIter, 32, sha256.New)
+	if version == 3 && useTPM == nil {
+		logger.Debug("ReadMasterKey: missing WithTPM option")
+		return nil, ErrDecryptFailed
+	}
+	salt := make([]byte, 16)
+	if !str.ReadBytes(&salt, 16) {
+		return nil, ErrDecryptFailed
+	}
+	var numIter uint32
+	if !str.ReadUint32(&numIter) {
+		return nil, ErrDecryptFailed
+	}
+	dk := pbkdf2.Key(passphrase, salt, int(numIter), 32, sha256.New)
 	block, err := aes.NewCipher(dk)
 	if err != nil {
 		logger.Debug(err)
@@ -168,14 +207,48 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
-	nonce := b[:gcm.NonceSize()]
-	encMasterKey := b[gcm.NonceSize():]
-	mkBytes, err := gcm.Open(nil, nonce, encMasterKey, nil)
+	nonce := make([]byte, gcm.NonceSize())
+	if !str.ReadBytes(&nonce, len(nonce)) {
+		return nil, ErrDecryptFailed
+	}
+	mkBytes, err := gcm.Open(nil, nonce, []byte(str), nil)
 	if err != nil {
 		logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
-	key := aesKeyFromBytes(mkBytes)
+	var key *AESKey
+	if version == 1 {
+		key = aesKeyFromBytes(mkBytes)
+	} else { // version == 3
+		str := cryptobyte.String(mkBytes)
+		var length uint16
+		if !str.ReadUint16(&length) {
+			return nil, ErrDecryptFailed
+		}
+		encKey := make([]byte, length)
+		if !str.ReadBytes(&encKey, len(encKey)) {
+			return nil, ErrDecryptFailed
+		}
+		if !str.ReadUint16(&length) {
+			return nil, ErrDecryptFailed
+		}
+		tpmCtx := make([]byte, length)
+		if !str.ReadBytes(&tpmCtx, len(tpmCtx)) {
+			return nil, ErrDecryptFailed
+		}
+		tpmKey, err := useTPM.Key(tpmCtx)
+		if err != nil {
+			return nil, err
+		}
+		decKey, err := tpmKey.Decrypt(encKey)
+		if err != nil {
+			logger.Debug(err)
+			return nil, ErrDecryptFailed
+		}
+		key = aesKeyFromBytes(decKey)
+		key.tpmKey = tpmKey
+		key.tpmCtx = tpmCtx
+	}
 	key.logger = logger
 	key.strictWipe = strictWipe
 	return &AESMasterKey{key}, nil
@@ -191,8 +264,6 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 	if len(passphrase) == 0 {
 		numIter = 10
 	}
-	numIterBin := make([]byte, 4)
-	binary.BigEndian.PutUint32(numIterBin, uint32(numIter))
 	dk := pbkdf2.Key(passphrase, salt, numIter, 32, sha256.New)
 	block, err := aes.NewCipher(dk)
 	if err != nil {
@@ -209,11 +280,38 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 		mk.Logger().Debug(err)
 		return ErrEncryptFailed
 	}
-	encMasterKey := gcm.Seal(nonce, nonce, mk.key(), nil)
-	data := []byte{1} // version
-	data = append(data, salt...)
-	data = append(data, numIterBin...)
-	data = append(data, encMasterKey...)
+	var version uint8
+	var payload []byte
+	if mk.tpmKey == nil {
+		version = 1
+		payload = mk.key()
+	} else {
+		version = 3
+		buf := cryptobyte.NewBuilder(nil)
+		encKey, err := mk.tpmKey.Encrypt(mk.key())
+		if err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+		buf.AddUint16(uint16(len(encKey)))
+		buf.AddBytes(encKey)
+		buf.AddUint16(uint16(len(mk.tpmCtx)))
+		buf.AddBytes(mk.tpmCtx)
+		if payload, err = buf.Bytes(); err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+	}
+	encMasterKey := gcm.Seal(nonce, nonce, payload, nil)
+	buf := cryptobyte.NewBuilder([]byte{version})
+	buf.AddBytes(salt)
+	buf.AddUint32(uint32(numIter))
+	buf.AddBytes(encMasterKey)
+	data, err := buf.Bytes()
+	if err != nil {
+		mk.Logger().Debug(err)
+		return ErrEncryptFailed
+	}
 	dir, _ := filepath.Split(file)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -237,6 +335,9 @@ func (k AESKey) Hash(b []byte) []byte {
 
 // Decrypt decrypts data that was encrypted with Encrypt and the same key.
 func (k AESKey) Decrypt(data []byte) ([]byte, error) {
+	if k.tpmKey != nil {
+		return k.tpmKey.Decrypt(data)
+	}
 	if len(k.maskedKey) == 0 {
 		k.Logger().Fatal("key is not set")
 	}
@@ -274,6 +375,9 @@ func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 
 // Encrypt encrypts data using the key.
 func (k AESKey) Encrypt(data []byte) ([]byte, error) {
+	if k.tpmKey != nil {
+		return k.tpmKey.Encrypt(data)
+	}
 	if len(k.maskedKey) == 0 {
 		k.Logger().Fatal("key is not set")
 	}
@@ -347,10 +451,17 @@ func (k AESKey) NewKey() (EncryptionKey, error) {
 	return ek, nil
 }
 
+func (k AESKey) keysize() int {
+	if k.tpmKey != nil {
+		return 2048 / 8
+	}
+	return aesEncryptedKeySize
+}
+
 // DecryptKey decrypts an encrypted key.
 func (k AESKey) DecryptKey(encryptedKey []byte) (EncryptionKey, error) {
-	if len(encryptedKey) != aesEncryptedKeySize {
-		k.Logger().Debugf("DecryptKey: unexpected encrypted key size %d != %d", len(encryptedKey), aesEncryptedKeySize)
+	if len(encryptedKey) != k.keysize() {
+		k.Logger().Debugf("DecryptKey: unexpected encrypted key size %d != %d", len(encryptedKey), k.keysize())
 		return nil, ErrDecryptFailed
 	}
 	b, err := k.Decrypt(encryptedKey)
@@ -509,6 +620,9 @@ func (r *AESStreamReader) Close() error {
 
 // StartReader opens a reader to decrypt a stream of data.
 func (k AESKey) StartReader(ctx []byte, r io.Reader) (StreamReader, error) {
+	if k.tpmKey != nil {
+		return nil, errors.New("operation not supported with TPM key")
+	}
 	var start int64
 	if seeker, ok := r.(io.Seeker); ok {
 		off, err := seeker.Seek(0, io.SeekCurrent)
@@ -577,6 +691,9 @@ func (w *AESStreamWriter) Close() (err error) {
 
 // StartWriter opens a writer to encrypt a stream of data.
 func (k AESKey) StartWriter(ctx []byte, w io.Writer) (StreamWriter, error) {
+	if k.tpmKey != nil {
+		return nil, errors.New("operation not supported with TPM key")
+	}
 	block, err := aes.NewCipher(k.key()[:32])
 	if err != nil {
 		k.Logger().Debug(err)
@@ -592,7 +709,7 @@ func (k AESKey) StartWriter(ctx []byte, w io.Writer) (StreamWriter, error) {
 
 // ReadEncryptedKey reads an encrypted key and decrypts it.
 func (k AESKey) ReadEncryptedKey(r io.Reader) (EncryptionKey, error) {
-	buf := make([]byte, aesEncryptedKeySize)
+	buf := make([]byte, k.keysize())
 	if _, err := io.ReadFull(r, buf); err != nil {
 		k.Logger().Debug(err)
 		return nil, ErrDecryptFailed
@@ -603,8 +720,8 @@ func (k AESKey) ReadEncryptedKey(r io.Reader) (EncryptionKey, error) {
 // WriteEncryptedKey writes the encrypted key to the writer.
 func (k AESKey) WriteEncryptedKey(w io.Writer) error {
 	n, err := w.Write(k.encryptedKey)
-	if n != aesEncryptedKeySize {
-		k.Logger().Debugf("WriteEncryptedKey: unexpected key size: %d != %d", n, aesEncryptedKeySize)
+	if n == 0 {
+		k.Logger().Debugf("WriteEncryptedKey: unexpected key size: %d", n)
 		return ErrEncryptFailed
 	}
 	return err

@@ -31,11 +31,15 @@ import (
 	"path/filepath"
 	"reflect"
 	"testing"
+
+	"github.com/c2FmZQ/tpm"
+	"github.com/google/go-tpm-tools/simulator"
 )
 
 func TestAESMasterKey(t *testing.T) {
 	dir := t.TempDir()
 	keyFile := filepath.Join(dir, "key")
+
 	mk, err := CreateAESMasterKey()
 	if err != nil {
 		t.Fatalf("CreateMasterKey: %v", err)
@@ -52,6 +56,47 @@ func TestAESMasterKey(t *testing.T) {
 	defer got.Wipe()
 	if want := mk; !reflect.DeepEqual(want.(*AESMasterKey).key(), got.(*AESMasterKey).key()) {
 		t.Errorf("Mismatch keys: %v != %v", want.(*AESMasterKey).key(), got.(*AESMasterKey).key())
+	}
+	if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
+		t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
+	}
+}
+
+func TestTPMAESMasterKey(t *testing.T) {
+	passphrase := []byte("foo")
+	dir := t.TempDir()
+	keyFile := filepath.Join(dir, "key")
+
+	rwc, err := simulator.Get()
+	if err != nil {
+		t.Fatalf("simulator.Get: %v", err)
+	}
+
+	tpm, err := tpm.New(rwc, []byte(passphrase))
+	if err != nil {
+		t.Fatalf("tpm.New: %v", err)
+	}
+	defer tpm.Close()
+
+	mk, err := CreateAESMasterKey(WithTPM(tpm))
+	if err != nil {
+		t.Fatalf("CreateMasterKey: %v", err)
+	}
+	defer mk.Wipe()
+	if err := mk.Save(passphrase, keyFile); err != nil {
+		t.Fatalf("mk.Save: %v", err)
+	}
+
+	mk2, err := ReadAESMasterKey(passphrase, keyFile, WithTPM(tpm))
+	if err != nil {
+		t.Fatalf("ReadMasterKey(%q): %v", passphrase, err)
+	}
+	defer mk2.Wipe()
+	if got, want := mk2, mk; !reflect.DeepEqual(want.(*AESMasterKey).key(), got.(*AESMasterKey).key()) {
+		t.Errorf("Mismatch keys: %v != %v", want.(*AESMasterKey).key(), got.(*AESMasterKey).key())
+	}
+	if got, want := mk2.(*AESMasterKey).tpmCtx, mk.(*AESMasterKey).tpmCtx; bytes.Compare(got, want) != 0 {
+		t.Errorf("Mismatch TPM Context: %v != %v", got, want)
 	}
 	if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
 		t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
@@ -83,6 +128,45 @@ func TestAESEncryptDecrypt(t *testing.T) {
 
 func TestAESEncryptedKey(t *testing.T) {
 	mk, err := CreateAESMasterKey()
+	if err != nil {
+		t.Fatalf("CreateMasterKey: %v", err)
+	}
+	defer mk.Wipe()
+
+	ek, err := mk.NewKey()
+	if err != nil {
+		t.Fatalf("mk.NewKey: %v", err)
+	}
+	defer ek.Wipe()
+
+	var buf bytes.Buffer
+	if err := ek.WriteEncryptedKey(&buf); err != nil {
+		t.Fatalf("ek.WriteEncryptedKey: %v", err)
+	}
+
+	ek2, err := mk.ReadEncryptedKey(&buf)
+	if err != nil {
+		t.Fatalf("mk.ReadEncryptedKey: %v", err)
+	}
+	defer ek2.Wipe()
+	if want, got := ek.(*AESKey).key(), ek2.(*AESKey).key(); !reflect.DeepEqual(want, got) {
+		t.Errorf("Unexpected key. Want %+v, got %+v", want, got)
+	}
+}
+
+func TestTPMAESEncryptedKey(t *testing.T) {
+	passphrase := []byte("foo")
+	rwc, err := simulator.Get()
+	if err != nil {
+		t.Fatalf("simulator.Get: %v", err)
+	}
+	tpm, err := tpm.New(rwc, []byte(passphrase))
+	if err != nil {
+		t.Fatalf("tpm.New: %v", err)
+	}
+	defer tpm.Close()
+
+	mk, err := CreateAESMasterKey(WithTPM(tpm))
 	if err != nil {
 		t.Fatalf("CreateMasterKey: %v", err)
 	}

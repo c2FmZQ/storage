@@ -336,7 +336,19 @@ func (k AESKey) Hash(b []byte) []byte {
 // Decrypt decrypts data that was encrypted with Encrypt and the same key.
 func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 	if k.tpmKey != nil {
-		return k.tpmKey.Decrypt(data)
+		if len(data) < 33 {
+			return nil, ErrDecryptFailed
+		}
+		version, data := data[0], data[1:]
+		if version != 3 {
+			return nil, ErrDecryptFailed
+		}
+		encData, data := data[:len(data)-32], data[len(data)-32:]
+		hm := data[:32]
+		if !hmac.Equal(hm, k.Hash(encData)) {
+			return nil, ErrDecryptFailed
+		}
+		return k.tpmKey.Decrypt(encData)
 	}
 	if len(k.maskedKey) == 0 {
 		k.Logger().Fatal("key is not set")
@@ -376,7 +388,16 @@ func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 // Encrypt encrypts data using the key.
 func (k AESKey) Encrypt(data []byte) ([]byte, error) {
 	if k.tpmKey != nil {
-		return k.tpmKey.Encrypt(data)
+		encData, err := k.tpmKey.Encrypt(data)
+		if err != nil {
+			return nil, ErrEncryptFailed
+		}
+		hmac := k.Hash(encData)
+		out := make([]byte, 1+len(encData)+len(hmac))
+		out[0] = 3 // version
+		copy(out[1:], encData)
+		copy(out[1+len(encData):], hmac)
+		return out, nil
 	}
 	if len(k.maskedKey) == 0 {
 		k.Logger().Fatal("key is not set")
@@ -453,7 +474,7 @@ func (k AESKey) NewKey() (EncryptionKey, error) {
 
 func (k AESKey) keysize() int {
 	if k.tpmKey != nil {
-		return 2048 / 8
+		return 2048/8 + 32 + 1
 	}
 	return aesEncryptedKeySize
 }

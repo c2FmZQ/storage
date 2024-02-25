@@ -103,6 +103,8 @@ func WithStrictWipe(v bool) Option {
 
 // WithTPM specifies that the master key should be in the Trusted Platform
 // Module (TPM).
+// When this option is used, the data encrypted with the master key can only
+// ever be decrypted with the same TPM.
 func WithTPM(tpm *tpm.TPM) Option {
 	return Option{tpm: tpm}
 }

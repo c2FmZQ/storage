@@ -1,5 +1,5 @@
-github.com/c2FmZQ/tpm v0.0.0-20240225010006-4eb971e39830 h1:uklA8wu60aPWQGpEcxyaJSx9lnlb/9oudDXbU6bYNdc=
-github.com/c2FmZQ/tpm v0.0.0-20240225010006-4eb971e39830/go.mod h1:Mu8tN1YfPkBu6FTgotrhLbNFQjXrui4d55e0+5OM7WE=
+github.com/c2FmZQ/tpm v0.0.0-20240225012538-087590ff918c h1:1nA1c38Fwrdz2FAwjtY1xRDzhq1ELq5K6Oi3AmXL3m0=
+github.com/c2FmZQ/tpm v0.0.0-20240225012538-087590ff918c/go.mod h1:Mu8tN1YfPkBu6FTgotrhLbNFQjXrui4d55e0+5OM7WE=
 github.com/golang/protobuf v1.5.3 h1:KhyjKVUg7Usr/dYsdSqoFveMYd5ko72D+zANwlG1mmg=
 github.com/golang/protobuf v1.5.3/go.mod h1:XVQd3VNwM+JqD3oG2Ue2ip4fOMUkwXdXDdiuN0vRsmY=
 github.com/google/go-configfs-tsm v0.2.2 h1:YnJ9rXIOj5BYD7/0DNnzs8AOp7UcvjfTvt215EWcs98=

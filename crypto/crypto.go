@@ -106,7 +106,8 @@ func WithStrictWipe(v bool) Option {
 // When this option is used, the data encrypted with the master key can only
 // ever be decrypted with the same TPM.
 func WithTPM(tpm *tpm.TPM) Option {
-	return Option{tpm: tpm}
+	alg := AES256WithTPMRSA2048
+	return Option{tpm: tpm, alg: &alg}
 }
 
 // CreateMasterKey creates a new master key.

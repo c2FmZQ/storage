@@ -24,10 +24,12 @@
 package crypto
 
 import (
+	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
@@ -240,7 +242,7 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		if err != nil {
 			return nil, err
 		}
-		decKey, err := tpmKey.Decrypt(encKey)
+		decKey, err := tpmKey.Decrypt(nil, encKey, nil)
 		if err != nil {
 			logger.Debug(err)
 			return nil, ErrDecryptFailed
@@ -336,19 +338,21 @@ func (k AESKey) Hash(b []byte) []byte {
 // Decrypt decrypts data that was encrypted with Encrypt and the same key.
 func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 	if k.tpmKey != nil {
-		if len(data) < 33 {
+		sigSize := k.tpmKey.Bits() / 8
+		if len(data) < 1+sigSize {
 			return nil, ErrDecryptFailed
 		}
 		version, data := data[0], data[1:]
 		if version != 3 {
 			return nil, ErrDecryptFailed
 		}
-		encData, data := data[:len(data)-32], data[len(data)-32:]
-		hm := data[:32]
-		if !hmac.Equal(hm, k.Hash(encData)) {
+		encData, data := data[:len(data)-sigSize], data[len(data)-sigSize:]
+		sig := data[:sigSize]
+		hashed := sha256.Sum256(encData)
+		if err := rsa.VerifyPKCS1v15(k.tpmKey.Public().(*rsa.PublicKey), crypto.SHA256, hashed[:], sig); err != nil {
 			return nil, ErrDecryptFailed
 		}
-		return k.tpmKey.Decrypt(encData)
+		return k.tpmKey.Decrypt(nil, encData, nil)
 	}
 	if len(k.maskedKey) == 0 {
 		k.Logger().Fatal("key is not set")
@@ -392,11 +396,15 @@ func (k AESKey) Encrypt(data []byte) ([]byte, error) {
 		if err != nil {
 			return nil, ErrEncryptFailed
 		}
-		hmac := k.Hash(encData)
-		out := make([]byte, 1+len(encData)+len(hmac))
+		hashed := sha256.Sum256(encData)
+		sig, err := k.tpmKey.Sign(nil, hashed[:], crypto.SHA256)
+		if err != nil {
+			return nil, ErrEncryptFailed
+		}
+		out := make([]byte, 1+len(encData)+len(sig))
 		out[0] = 3 // version
 		copy(out[1:], encData)
-		copy(out[1+len(encData):], hmac)
+		copy(out[1+len(encData):], sig)
 		return out, nil
 	}
 	if len(k.maskedKey) == 0 {
@@ -474,7 +482,7 @@ func (k AESKey) NewKey() (EncryptionKey, error) {
 
 func (k AESKey) keysize() int {
 	if k.tpmKey != nil {
-		return 2048/8 + 32 + 1
+		return 2*k.tpmKey.Bits()/8 + 1
 	}
 	return aesEncryptedKeySize
 }

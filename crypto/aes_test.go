@@ -72,7 +72,7 @@ func TestTPMAESMasterKey(t *testing.T) {
 		t.Fatalf("simulator.Get: %v", err)
 	}
 
-	tpm, err := tpm.New(rwc, []byte(passphrase))
+	tpm, err := tpm.New(tpm.WithTPM(rwc), tpm.WithObjectAuth([]byte(passphrase)))
 	if err != nil {
 		t.Fatalf("tpm.New: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestTPMAESEncryptedKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("simulator.Get: %v", err)
 	}
-	tpm, err := tpm.New(rwc, []byte(passphrase))
+	tpm, err := tpm.New(tpm.WithTPM(rwc), tpm.WithObjectAuth([]byte(passphrase)))
 	if err != nil {
 		t.Fatalf("tpm.New: %v", err)
 	}

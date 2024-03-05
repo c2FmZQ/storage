@@ -36,9 +36,9 @@ import (
 )
 
 const (
-	AES256           int = iota // AES256-GCM, AES256-CBC+HMAC-SHA256, PBKDF2.
-	Chacha20Poly1305            // Chacha20Poly1305, Argon2.
-	AES256WithTPM               // Like AES256, with masterkey on TPM.
+	AES256               int = iota // AES256-GCM, AES256-CBC+HMAC-SHA256, PBKDF2.
+	Chacha20Poly1305                // Chacha20Poly1305, Argon2.
+	AES256WithTPMRSA2048            // Like AES256, with RSA2048 masterkey on TPM.
 
 	DefaultAlgo = AES256
 	PickFastest = -1
@@ -124,7 +124,7 @@ func CreateMasterKey(opts ...Option) (MasterKey, error) {
 		}
 	}
 	switch alg {
-	case AES256, AES256WithTPM:
+	case AES256, AES256WithTPMRSA2048:
 		return CreateAESMasterKey(opts...)
 	case Chacha20Poly1305:
 		return CreateChacha20Poly1305MasterKey(opts...)

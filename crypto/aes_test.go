@@ -95,9 +95,6 @@ func TestTPMAESMasterKey(t *testing.T) {
 	if got, want := mk2, mk; !reflect.DeepEqual(want.(*AESMasterKey).key(), got.(*AESMasterKey).key()) {
 		t.Errorf("Mismatch keys: %v != %v", want.(*AESMasterKey).key(), got.(*AESMasterKey).key())
 	}
-	if got, want := mk2.(*AESMasterKey).tpmCtx, mk.(*AESMasterKey).tpmCtx; bytes.Compare(got, want) != 0 {
-		t.Errorf("Mismatch TPM Context: %v != %v", got, want)
-	}
 	if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
 		t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
 	}

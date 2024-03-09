@@ -63,7 +63,6 @@ type AESKey struct {
 	logger     Logger
 	strictWipe bool
 	tpmKey     *tpm.Key
-	tpmCtx     []byte
 }
 
 func (k *AESKey) Logger() Logger {
@@ -119,12 +118,7 @@ func CreateAESMasterKey(opts ...Option) (MasterKey, error) {
 		if err != nil {
 			return nil, err
 		}
-		tpmctx, err := tpmkey.Marshal()
-		if err != nil {
-			return nil, err
-		}
 		mk.tpmKey = tpmkey
-		mk.tpmCtx = tpmctx
 	}
 	return mk, nil
 }
@@ -225,7 +219,6 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		}
 		key = aesKeyFromBytes(decKey)
 		key.tpmKey = tpmKey
-		key.tpmCtx = tpmCtx
 	}
 	key.logger = opt.logger
 	key.strictWipe = opt.strictWipe
@@ -273,8 +266,13 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 		}
 		buf.AddUint16(uint16(len(encKey)))
 		buf.AddBytes(encKey)
-		buf.AddUint16(uint16(len(mk.tpmCtx)))
-		buf.AddBytes(mk.tpmCtx)
+		keyctx, err := mk.tpmKey.Marshal()
+		if err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+		buf.AddUint16(uint16(len(keyctx)))
+		buf.AddBytes(keyctx)
 		if payload, err = buf.Bytes(); err != nil {
 			mk.Logger().Debug(err)
 			return ErrEncryptFailed

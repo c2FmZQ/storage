@@ -259,7 +259,8 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 	} else {
 		version = 3
 		buf := cryptobyte.NewBuilder(nil)
-		encKey, err := mk.tpmKey.Encrypt(mk.key())
+		// encKey, err := mk.tpmKey.Encrypt(mk.key())
+		encKey, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, mk.tpmKey.Public().(*rsa.PublicKey), mk.key(), nil)
 		if err != nil {
 			mk.Logger().Debug(err)
 			return ErrEncryptFailed
@@ -366,7 +367,8 @@ func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 // Encrypt encrypts data using the key.
 func (k AESKey) Encrypt(data []byte) ([]byte, error) {
 	if k.tpmKey != nil {
-		encData, err := k.tpmKey.Encrypt(data)
+		// encData, err := k.tpmKey.Encrypt(data)
+		encData, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, k.tpmKey.Public().(*rsa.PublicKey), data, nil)
 		if err != nil {
 			return nil, ErrEncryptFailed
 		}

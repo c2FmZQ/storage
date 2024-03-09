@@ -71,7 +71,7 @@ func tpmEncryptionKey() crypto.EncryptionKey {
 		}
 		globalTPM = tpm
 	})
-	mk, err := crypto.CreateAESMasterKey(crypto.WithTPM(globalTPM))
+	mk, err := crypto.CreateAESMasterKey(crypto.WithTPM(globalTPM), crypto.WithStrictWipe(false))
 	if err != nil {
 		panic(err)
 	}
@@ -109,7 +109,6 @@ func TestOpenForUpdate(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer tc.mk.Wipe()
 			dir := t.TempDir()
 			fn := "test.json"
 			s := New(dir, tc.mk)
@@ -226,7 +225,6 @@ func TestEncodeByteSlice(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer tc.mk.Wipe()
 			want := []byte("Hello world")
 			dir := t.TempDir()
 			s := New(dir, tc.mk)
@@ -258,7 +256,6 @@ func TestEncodeBinary(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer tc.mk.Wipe()
 			want := time.Now()
 			dir := t.TempDir()
 			s := New(dir, tc.mk)
@@ -296,7 +293,6 @@ func TestBlobs(t *testing.T) {
 	}
 	for _, tc := range testcases {
 		t.Run(tc.name, func(t *testing.T) {
-			defer tc.mk.Wipe()
 			dir := t.TempDir()
 			s := New(dir, tc.mk)
 
@@ -386,9 +382,6 @@ func TestBlobs(t *testing.T) {
 }
 
 func RunBenchmarkOpenForUpdate(b *testing.B, kb int, k crypto.EncryptionKey, compress, useGOB bool) {
-	if k != nil {
-		defer k.Wipe()
-	}
 	dir := b.TempDir()
 	file := filepath.Join(dir, "testfile")
 	s := New(dir, k)

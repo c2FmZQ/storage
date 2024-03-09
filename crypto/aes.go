@@ -104,34 +104,22 @@ type AESMasterKey struct {
 
 // CreateAESMasterKey creates a new master key.
 func CreateAESMasterKey(opts ...Option) (MasterKey, error) {
-	var logger Logger = defaultLogger{}
-	var strictWipe bool
-	var useTPM *tpm.TPM
-	for _, opt := range opts {
-		if opt.logger != nil {
-			logger = opt.logger
-		}
-		if opt.strictWipe != nil {
-			strictWipe = *opt.strictWipe
-		}
-		if opt.tpm != nil {
-			useTPM = opt.tpm
-		}
-	}
+	var opt option
+	opt.apply(opts)
 	b := make([]byte, 64)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
 	key := aesKeyFromBytes(b)
-	key.logger = logger
-	key.strictWipe = strictWipe
+	key.logger = opt.logger
+	key.strictWipe = opt.strictWipe
 	mk := &AESMasterKey{key}
-	if useTPM != nil {
-		tpmctx, err := useTPM.CreateKey()
+	if opt.tpm != nil {
+		tpmkey, err := opt.tpm.CreateKey()
 		if err != nil {
 			return nil, err
 		}
-		tpmkey, err := useTPM.Key(tpmctx)
+		tpmctx, err := tpmkey.Marshal()
 		if err != nil {
 			return nil, err
 		}
@@ -156,20 +144,8 @@ func CreateAESMasterKeyForTest() (MasterKey, error) {
 
 // ReadAESMasterKey reads an encrypted master key from file and decrypts it.
 func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey, error) {
-	var logger Logger = defaultLogger{}
-	var strictWipe bool
-	var useTPM *tpm.TPM
-	for _, opt := range opts {
-		if opt.logger != nil {
-			logger = opt.logger
-		}
-		if opt.strictWipe != nil {
-			strictWipe = *opt.strictWipe
-		}
-		if opt.tpm != nil {
-			useTPM = opt.tpm
-		}
-	}
+	var opt option
+	opt.apply(opts)
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
@@ -183,11 +159,11 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		return nil, ErrDecryptFailed
 	}
 	if version != 1 && version != 3 {
-		logger.Debugf("ReadMasterKey: unexpected version: %d", version)
+		opt.logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
-	if version == 3 && useTPM == nil {
-		logger.Debug("ReadMasterKey: missing WithTPM option")
+	if version == 3 && opt.tpm == nil {
+		opt.logger.Debug("ReadMasterKey: missing WithTPM option")
 		return nil, ErrDecryptFailed
 	}
 	salt := make([]byte, 16)
@@ -201,12 +177,12 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 	dk := pbkdf2.Key(passphrase, salt, int(numIter), 32, sha256.New)
 	block, err := aes.NewCipher(dk)
 	if err != nil {
-		logger.Debug(err)
+		opt.logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		logger.Debug(err)
+		opt.logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
 	nonce := make([]byte, gcm.NonceSize())
@@ -215,7 +191,7 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 	}
 	mkBytes, err := gcm.Open(nil, nonce, []byte(str), nil)
 	if err != nil {
-		logger.Debug(err)
+		opt.logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
 	var key *AESKey
@@ -238,21 +214,21 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		if !str.ReadBytes(&tpmCtx, len(tpmCtx)) {
 			return nil, ErrDecryptFailed
 		}
-		tpmKey, err := useTPM.Key(tpmCtx)
+		tpmKey, err := opt.tpm.UnmarshalKey(tpmCtx)
 		if err != nil {
 			return nil, err
 		}
 		decKey, err := tpmKey.Decrypt(nil, encKey, nil)
 		if err != nil {
-			logger.Debug(err)
+			opt.logger.Debug(err)
 			return nil, ErrDecryptFailed
 		}
 		key = aesKeyFromBytes(decKey)
 		key.tpmKey = tpmKey
 		key.tpmCtx = tpmCtx
 	}
-	key.logger = logger
-	key.strictWipe = strictWipe
+	key.logger = opt.logger
+	key.strictWipe = opt.strictWipe
 	return &AESMasterKey{key}, nil
 }
 

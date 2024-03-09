@@ -31,12 +31,8 @@ import (
 // Fastest runs an in-memory speedtest and returns the fastest encryption
 // algorithm on the local computer.
 func Fastest(opts ...Option) (int, error) {
-	var logger Logger = defaultLogger{}
-	for _, opt := range opts {
-		if opt.logger != nil {
-			logger = opt.logger
-		}
-	}
+	var opt option
+	opt.apply(opts)
 	algos := []struct {
 		name string
 		alg  int
@@ -59,14 +55,14 @@ func Fastest(opts ...Option) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-		logger.Debugf("speedtest: %s(%d) encrypted %d MiB in %s", a.name, a.alg, mb, t)
+		opt.logger.Debugf("speedtest: %s(%d) encrypted %d MiB in %s", a.name, a.alg, mb, t)
 		if fastest == -1 || t < fastestTime {
 			fastest = a.alg
 			fastestName = a.name
 			fastestTime = t
 		}
 	}
-	logger.Infof("Using %s encryption.", fastestName)
+	opt.logger.Infof("Using %s encryption.", fastestName)
 	return fastest, nil
 }
 

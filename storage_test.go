@@ -343,7 +343,7 @@ func TestBlobs(t *testing.T) {
 				t.Fatalf("r.Seek(5, io.SeekStart) failed: %v", err)
 			}
 			if off, err = r.Seek(10, io.SeekCurrent); err != nil {
-				t.Fatalf("r.Seek(5, io.SeekCurrent) failed: %v", err)
+				t.Fatalf("r.Seek(10, io.SeekCurrent) failed: %v", err)
 			}
 			if want, got := int64(15), off; want != got {
 				t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)

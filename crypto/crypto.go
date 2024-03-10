@@ -31,11 +31,14 @@ import (
 	"log"
 	"os"
 	"runtime"
+
+	"github.com/c2FmZQ/tpm"
 )
 
 const (
-	AES256           int = iota // AES256-GCM, AES256-CBC+HMAC-SHA256, PBKDF2.
-	Chacha20Poly1305            // Chacha20Poly1305, Argon2.
+	AES256               int = iota // AES256-GCM, AES256-CBC+HMAC-SHA256, PBKDF2.
+	Chacha20Poly1305                // Chacha20Poly1305, Argon2.
+	AES256WithTPMRSA2048            // Like AES256, with RSA2048 masterkey on TPM.
 
 	DefaultAlgo = AES256
 	PickFastest = -1
@@ -73,37 +76,65 @@ type MasterKey interface {
 }
 
 // Option is used to specify the parameters of MasterKey.
-type Option struct {
-	alg        *int
+type Option func(*option)
+
+type option struct {
+	alg        int
 	logger     Logger
-	strictWipe *bool
+	strictWipe bool
+	tpm        *tpm.TPM
+	passphrase []byte
+}
+
+func (o *option) apply(opts []Option) {
+	o.alg = DefaultAlgo
+	o.logger = defaultLogger{}
+	for _, opt := range opts {
+		opt(o)
+	}
 }
 
 // WithAlgo specifies the cryptographic algorithm to use.
 func WithAlgo(alg int) Option {
-	return Option{alg: &alg}
+	return func(opt *option) {
+		opt.alg = alg
+	}
 }
 
 // WithLogger specifies the logger to use.
 func WithLogger(l Logger) Option {
-	return Option{logger: l}
+	return func(opt *option) {
+		opt.logger = l
+	}
 }
 
 // WithStrictWipe specifies whether strict wipe is required. When enabled, keys
 // must be wiped by calling Wipe() when they are no longer needed. Otherwise,
 // program execution will be stopped with a fatal error.
 func WithStrictWipe(v bool) Option {
-	return Option{strictWipe: &v}
+	return func(opt *option) {
+		opt.strictWipe = v
+	}
+}
+
+// WithTPM specifies that the master key should be in the Trusted Platform
+// Module (TPM).
+// When this option is used, the data encrypted with the master key can only
+// ever be decrypted with the same TPM.
+func WithTPM(tpm *tpm.TPM) Option {
+	return func(opt *option) {
+		opt.tpm = tpm
+		if opt.alg == DefaultAlgo {
+			opt.alg = AES256WithTPMRSA2048
+		}
+	}
 }
 
 // CreateMasterKey creates a new master key.
 func CreateMasterKey(opts ...Option) (MasterKey, error) {
 	alg := DefaultAlgo
-	for _, opt := range opts {
-		if opt.alg != nil {
-			alg = *opt.alg
-		}
-	}
+	var opt option
+	opt.apply(opts)
 	if alg == PickFastest {
 		var err error
 		if alg, err = Fastest(opts...); err != nil {
@@ -111,7 +142,7 @@ func CreateMasterKey(opts ...Option) (MasterKey, error) {
 		}
 	}
 	switch alg {
-	case AES256:
+	case AES256, AES256WithTPMRSA2048:
 		return CreateAESMasterKey(opts...)
 	case Chacha20Poly1305:
 		return CreateChacha20Poly1305MasterKey(opts...)
@@ -130,7 +161,7 @@ func ReadMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey, e
 		return nil, ErrUnexpectedAlgo
 	}
 	switch b[0] {
-	case 1: // AES256
+	case 1, 3: // AES256 or AES256WithTPM
 		return ReadAESMasterKey(passphrase, file, opts...)
 	case 2: // Chacha20Poly1305
 		return ReadChacha20Poly1305MasterKey(passphrase, file, opts...)

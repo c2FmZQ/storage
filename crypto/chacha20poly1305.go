@@ -96,23 +96,18 @@ type Chacha20Poly1305MasterKey struct {
 
 // CreateChacha20Poly1305MasterKey creates a new master key.
 func CreateChacha20Poly1305MasterKey(opts ...Option) (MasterKey, error) {
-	var logger Logger = defaultLogger{}
-	var strictWipe bool
-	for _, opt := range opts {
-		if opt.logger != nil {
-			logger = opt.logger
-		}
-		if opt.strictWipe != nil {
-			strictWipe = *opt.strictWipe
-		}
+	var opt option
+	opt.apply(opts)
+	if opt.tpm != nil {
+		return nil, errors.New("tpm key not implemented with chacha20poly1305")
 	}
 	b := make([]byte, 64)
 	if _, err := rand.Read(b); err != nil {
 		return nil, err
 	}
 	key := chacha20poly1305KeyFromBytes(b)
-	key.logger = logger
-	key.strictWipe = strictWipe
+	key.logger = opt.logger
+	key.strictWipe = opt.strictWipe
 	return &Chacha20Poly1305MasterKey{key}, nil
 }
 
@@ -128,16 +123,8 @@ func CreateChacha20Poly1305MasterKeyForTest() (MasterKey, error) {
 
 // ReadChacha20Poly1305MasterKey reads an encrypted master key from file and decrypts it.
 func ReadChacha20Poly1305MasterKey(passphrase []byte, file string, opts ...Option) (MasterKey, error) {
-	var logger Logger = defaultLogger{}
-	var strictWipe bool
-	for _, opt := range opts {
-		if opt.logger != nil {
-			logger = opt.logger
-		}
-		if opt.strictWipe != nil {
-			strictWipe = *opt.strictWipe
-		}
-	}
+	var opt option
+	opt.apply(opts)
 	b, err := os.ReadFile(file)
 	if err != nil {
 		return nil, err
@@ -147,7 +134,7 @@ func ReadChacha20Poly1305MasterKey(passphrase []byte, file string, opts ...Optio
 	}
 	version, b := b[0], b[1:]
 	if version != 2 {
-		logger.Debugf("ReadMasterKey: unexpected version: %d", version)
+		opt.logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
 	salt, b := b[:16], b[16:]
@@ -156,19 +143,19 @@ func ReadChacha20Poly1305MasterKey(passphrase []byte, file string, opts ...Optio
 	dk := argon2.IDKey(passphrase, salt, time, memory, 1, 32)
 	ccp, err := chacha20poly1305.NewX(dk)
 	if err != nil {
-		logger.Debug(err)
+		opt.logger.Debug(err)
 		return nil, ErrEncryptFailed
 	}
 	nonce := b[:ccp.NonceSize()]
 	encMasterKey := b[ccp.NonceSize():]
 	mkBytes, err := ccp.Open(nil, nonce, encMasterKey, nil)
 	if err != nil {
-		logger.Debug(err)
+		opt.logger.Debug(err)
 		return nil, ErrDecryptFailed
 	}
 	key := chacha20poly1305KeyFromBytes(mkBytes)
-	key.logger = logger
-	key.strictWipe = strictWipe
+	key.logger = opt.logger
+	key.strictWipe = opt.strictWipe
 	return &Chacha20Poly1305MasterKey{key}, nil
 }
 

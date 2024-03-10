@@ -30,11 +30,18 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/c2FmZQ/tpm"
+	"github.com/google/go-tpm-tools/simulator"
+
 	"github.com/c2FmZQ/storage/crypto"
 )
+
+var globalTPM *tpm.TPM
+var tpmOnce sync.Once
 
 func aesEncryptionKey() crypto.EncryptionKey {
 	mk, err := crypto.CreateAESMasterKeyForTest()
@@ -46,6 +53,25 @@ func aesEncryptionKey() crypto.EncryptionKey {
 
 func ccEncryptionKey() crypto.EncryptionKey {
 	mk, err := crypto.CreateChacha20Poly1305MasterKeyForTest()
+	if err != nil {
+		panic(err)
+	}
+	return mk.(crypto.EncryptionKey)
+}
+
+func tpmEncryptionKey() crypto.EncryptionKey {
+	tpmOnce.Do(func() {
+		rwc, err := simulator.Get()
+		if err != nil {
+			panic(err)
+		}
+		tpm, err := tpm.New(tpm.WithTPM(rwc))
+		if err != nil {
+			panic(err)
+		}
+		globalTPM = tpm
+	})
+	mk, err := crypto.CreateAESMasterKey(crypto.WithTPM(globalTPM), crypto.WithStrictWipe(false))
 	if err != nil {
 		panic(err)
 	}
@@ -73,38 +99,50 @@ func TestLock(t *testing.T) {
 }
 
 func TestOpenForUpdate(t *testing.T) {
-	dir := t.TempDir()
-	fn := "test.json"
-	s := New(dir, aesEncryptionKey())
+	testcases := []struct {
+		name string
+		mk   crypto.EncryptionKey
+	}{
+		{"AES", aesEncryptionKey()},
+		{"Chacha20Poly1305", ccEncryptionKey()},
+		{"TPM", tpmEncryptionKey()},
+	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			fn := "test.json"
+			s := New(dir, tc.mk)
 
-	type Foo struct {
-		Foo string `json:"foo"`
-	}
-	foo := Foo{"foo"}
-	if err := s.SaveDataFile(fn, foo); err != nil {
-		t.Fatalf("s.SaveDataFile failed: %v", err)
-	}
-	var bar Foo
-	commit, err := s.OpenForUpdate(fn, &bar)
-	if err != nil {
-		t.Fatalf("s.OpenForUpdate failed: %v", err)
-	}
-	if !reflect.DeepEqual(foo, bar) {
-		t.Fatalf("s.OpenForUpdate() got %+v, want %+v", bar, foo)
-	}
-	bar.Foo = "bar"
-	if err := commit(true, nil); err != nil {
-		t.Errorf("done() failed: %v", err)
-	}
-	if err := commit(false, nil); err != ErrAlreadyCommitted {
-		t.Errorf("unexpected error. Want %v, got %v", ErrAlreadyCommitted, err)
-	}
+			type Foo struct {
+				Foo string `json:"foo"`
+			}
+			foo := Foo{"foo"}
+			if err := s.SaveDataFile(fn, foo); err != nil {
+				t.Fatalf("s.SaveDataFile failed: %v", err)
+			}
+			var bar Foo
+			commit, err := s.OpenForUpdate(fn, &bar)
+			if err != nil {
+				t.Fatalf("s.OpenForUpdate failed: %v", err)
+			}
+			if !reflect.DeepEqual(foo, bar) {
+				t.Fatalf("s.OpenForUpdate() got %+v, want %+v", bar, foo)
+			}
+			bar.Foo = "bar"
+			if err := commit(true, nil); err != nil {
+				t.Errorf("done() failed: %v", err)
+			}
+			if err := commit(false, nil); err != ErrAlreadyCommitted {
+				t.Errorf("unexpected error. Want %v, got %v", ErrAlreadyCommitted, err)
+			}
 
-	if err := s.ReadDataFile(fn, &foo); err != nil {
-		t.Fatalf("s.ReadDataFile() failed: %v", err)
-	}
-	if !reflect.DeepEqual(foo, bar) {
-		t.Fatalf("d.openForUpdate() got %+v, want %+v", foo, bar)
+			if err := s.ReadDataFile(fn, &foo); err != nil {
+				t.Fatalf("s.ReadDataFile() failed: %v", err)
+			}
+			if !reflect.DeepEqual(foo, bar) {
+				t.Fatalf("d.openForUpdate() got %+v, want %+v", foo, bar)
+			}
+		})
 	}
 }
 
@@ -177,133 +215,169 @@ func TestOpenForUpdateDeferredDone(t *testing.T) {
 }
 
 func TestEncodeByteSlice(t *testing.T) {
-	want := []byte("Hello world")
-	dir := t.TempDir()
-	s := New(dir, aesEncryptionKey())
-	if err := s.CreateEmptyFile("file", (*[]byte)(nil)); err != nil {
-		t.Fatalf("s.CreateEmptyFile failed: %v", err)
+	testcases := []struct {
+		name string
+		mk   crypto.EncryptionKey
+	}{
+		{"AES", aesEncryptionKey()},
+		{"Chacha20Poly1305", ccEncryptionKey()},
+		{"TPM", tpmEncryptionKey()},
 	}
-	if err := s.SaveDataFile("file", &want); err != nil {
-		t.Fatalf("s.WriteDataFile() failed: %v", err)
-	}
-	var got []byte
-	if err := s.ReadDataFile("file", &got); err != nil {
-		t.Fatalf("s.ReadDataFile() failed: %v", err)
-	}
-	if !reflect.DeepEqual(want, got) {
-		t.Errorf("Unexpected msg. Want %q, got %q", want, got)
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := []byte("Hello world")
+			dir := t.TempDir()
+			s := New(dir, tc.mk)
+			if err := s.CreateEmptyFile("file", (*[]byte)(nil)); err != nil {
+				t.Fatalf("s.CreateEmptyFile failed: %v", err)
+			}
+			if err := s.SaveDataFile("file", &want); err != nil {
+				t.Fatalf("s.WriteDataFile() failed: %v", err)
+			}
+			var got []byte
+			if err := s.ReadDataFile("file", &got); err != nil {
+				t.Fatalf("s.ReadDataFile() failed: %v", err)
+			}
+			if !reflect.DeepEqual(want, got) {
+				t.Errorf("Unexpected msg. Want %q, got %q", want, got)
+			}
+		})
 	}
 }
 
 func TestEncodeBinary(t *testing.T) {
-	want := time.Now()
-	dir := t.TempDir()
-	s := New(dir, aesEncryptionKey())
-	if err := s.CreateEmptyFile("file", &time.Time{}); err != nil {
-		t.Fatalf("s.CreateEmptyFile failed: %v", err)
+	testcases := []struct {
+		name string
+		mk   crypto.EncryptionKey
+	}{
+		{"AES", aesEncryptionKey()},
+		{"Chacha20Poly1305", ccEncryptionKey()},
+		{"TPM", tpmEncryptionKey()},
 	}
-	if err := s.SaveDataFile("file", &want); err != nil {
-		t.Fatalf("s.WriteDataFile() failed: %v", err)
-	}
-	var got time.Time
-	if err := s.ReadDataFile("file", &got); err != nil {
-		t.Fatalf("s.ReadDataFile() failed: %v", err)
-	}
-	if got.UnixNano() != want.UnixNano() {
-		t.Errorf("Unexpected time. Want %q, got %q", want, got)
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := time.Now()
+			dir := t.TempDir()
+			s := New(dir, tc.mk)
+			if err := s.CreateEmptyFile("file", &time.Time{}); err != nil {
+				t.Fatalf("s.CreateEmptyFile failed: %v", err)
+			}
+			if err := s.SaveDataFile("file", &want); err != nil {
+				t.Fatalf("s.WriteDataFile() failed: %v", err)
+			}
+			var got time.Time
+			if err := s.ReadDataFile("file", &got); err != nil {
+				t.Fatalf("s.ReadDataFile() failed: %v", err)
+			}
+			if got.UnixNano() != want.UnixNano() {
+				t.Errorf("Unexpected time. Want %q, got %q", want, got)
+			}
+		})
 	}
 }
 
 func TestBlobs(t *testing.T) {
-	dir := t.TempDir()
-	s := New(dir, aesEncryptionKey())
-	//s := New(dir, ccEncryptionKey())
 	const (
 		temp    = "tempfile"
 		final   = "finalfile"
 		content = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	)
 
-	w, err := s.OpenBlobWrite(temp, final)
-	if err != nil {
-		t.Fatalf("s.OpenBlobWrite failed: %v", err)
+	testcases := []struct {
+		name string
+		mk   crypto.EncryptionKey
+	}{
+		{"AES", aesEncryptionKey()},
+		{"Chacha20Poly1305", ccEncryptionKey()},
+		{"TPM", tpmEncryptionKey()},
 	}
-	if _, err := w.Write([]byte(content)); err != nil {
-		t.Fatalf("w.Write failed: %v", err)
-	}
-	if err := w.Close(); err != nil {
-		t.Fatalf("w.Close failed: %v", err)
-	}
+	for _, tc := range testcases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := New(dir, tc.mk)
 
-	var buf []byte
-	if err := s.ReadDataFile(temp, &buf); err == nil {
-		t.Fatalf("s.ReadDataFile() didn't fail. Got: %s", buf)
-	}
-	if err := os.Rename(filepath.Join(dir, temp), filepath.Join(dir, final)); err != nil {
-		t.Fatalf("os.Rename failed: %v", err)
-	}
-	if err := s.ReadDataFile(final, &buf); err != nil {
-		t.Fatalf("s.ReadDataFile() failed: %v", err)
-	}
-	if want, got := content, string(buf); want != got {
-		t.Errorf("Unexpected content. Want %q, got %q", want, got)
-	}
+			w, err := s.OpenBlobWrite(temp, final)
+			if err != nil {
+				t.Fatalf("s.OpenBlobWrite failed: %v", err)
+			}
+			if _, err := w.Write([]byte(content)); err != nil {
+				t.Fatalf("w.Write failed: %v", err)
+			}
+			if err := w.Close(); err != nil {
+				t.Fatalf("w.Close failed: %v", err)
+			}
 
-	r, err := s.OpenBlobRead(final)
-	if err != nil {
-		t.Fatalf("s.OpenBlobRead failed: %v", err)
-	}
+			var buf []byte
+			if err := s.ReadDataFile(temp, &buf); err == nil {
+				t.Fatalf("s.ReadDataFile() didn't fail. Got: %s", buf)
+			}
+			if err := os.Rename(filepath.Join(dir, temp), filepath.Join(dir, final)); err != nil {
+				t.Fatalf("os.Rename failed: %v", err)
+			}
+			if err := s.ReadDataFile(final, &buf); err != nil {
+				t.Fatalf("s.ReadDataFile() failed: %v", err)
+			}
+			if want, got := content, string(buf); want != got {
+				t.Errorf("Unexpected content. Want %q, got %q", want, got)
+			}
 
-	// Test SeekStart.
-	off, err := r.Seek(5, io.SeekStart)
-	if err != nil {
-		t.Fatalf("r.Seek(5, io.SeekStart) failed: %v", err)
-	}
-	if want, got := int64(5), off; want != got {
-		t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
-	}
-	if got, err := io.ReadAll(r); err != nil || string(got) != content[5:] {
-		t.Errorf("Unexpected content. Want %q, got %s", content[5:], got)
-	}
+			r, err := s.OpenBlobRead(final)
+			if err != nil {
+				t.Fatalf("s.OpenBlobRead failed: %v", err)
+			}
 
-	// Test SeekCurrent.
-	if _, err := r.Seek(5, io.SeekStart); err != nil {
-		t.Fatalf("r.Seek(5, io.SeekStart) failed: %v", err)
-	}
-	if off, err = r.Seek(10, io.SeekCurrent); err != nil {
-		t.Fatalf("r.Seek(5, io.SeekCurrent) failed: %v", err)
-	}
-	if want, got := int64(15), off; want != got {
-		t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
-	}
-	if got, err := io.ReadAll(r); err != nil || string(got) != content[15:] {
-		t.Errorf("Unexpected content. Want %q, got %s", content[15:], got)
-	}
+			// Test SeekStart.
+			off, err := r.Seek(5, io.SeekStart)
+			if err != nil {
+				t.Fatalf("r.Seek(5, io.SeekStart) failed: %v", err)
+			}
+			if want, got := int64(5), off; want != got {
+				t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != content[5:] {
+				t.Errorf("Unexpected content. Want %q, got %s", content[5:], got)
+			}
 
-	// Test SeekEnd.
-	if off, err = r.Seek(-3, io.SeekEnd); err != nil {
-		t.Fatalf("r.Seek(-3, io.SeekEnd) failed: %v", err)
-	}
-	if want, got := int64(len(content)-3), off; want != got {
-		t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
-	}
-	if got, err := io.ReadAll(r); err != nil || string(got) != "XYZ" {
-		t.Errorf("Unexpected content. Want %q, got %s", "XYZ", got)
-	}
+			// Test SeekCurrent.
+			if _, err := r.Seek(5, io.SeekStart); err != nil {
+				t.Fatalf("r.Seek(5, io.SeekStart) failed: %v", err)
+			}
+			if off, err = r.Seek(10, io.SeekCurrent); err != nil {
+				t.Fatalf("r.Seek(10, io.SeekCurrent) failed: %v", err)
+			}
+			if want, got := int64(15), off; want != got {
+				t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != content[15:] {
+				t.Errorf("Unexpected content. Want %q, got %s", content[15:], got)
+			}
 
-	// Test SeekEnd.
-	if off, err = r.Seek(0, io.SeekEnd); err != nil {
-		t.Fatalf("r.Seek(0, io.SeekEnd) failed: %v", err)
-	}
-	if want, got := int64(len(content)), off; want != got {
-		t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
-	}
-	if got, err := io.ReadAll(r); err != nil || string(got) != "" {
-		t.Errorf("Unexpected content. Want %q, got %s", "", got)
-	}
+			// Test SeekEnd.
+			if off, err = r.Seek(-3, io.SeekEnd); err != nil {
+				t.Fatalf("r.Seek(-3, io.SeekEnd) failed: %v", err)
+			}
+			if want, got := int64(len(content)-3), off; want != got {
+				t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != "XYZ" {
+				t.Errorf("Unexpected content. Want %q, got %s", "XYZ", got)
+			}
 
-	if err := r.Close(); err != nil {
-		t.Fatalf("r.Close failed: %v", err)
+			// Test SeekEnd.
+			if off, err = r.Seek(0, io.SeekEnd); err != nil {
+				t.Fatalf("r.Seek(0, io.SeekEnd) failed: %v", err)
+			}
+			if want, got := int64(len(content)), off; want != got {
+				t.Errorf("Unexpected seek offset. Want %d, got %d", want, got)
+			}
+			if got, err := io.ReadAll(r); err != nil || string(got) != "" {
+				t.Errorf("Unexpected content. Want %q, got %s", "", got)
+			}
+
+			if err := r.Close(); err != nil {
+				t.Fatalf("r.Close failed: %v", err)
+			}
+		})
 	}
 }
 
@@ -427,6 +501,22 @@ func BenchmarkOpenForUpdate_GOB_10MB_CHACHA20POLY1305(b *testing.B) {
 
 func BenchmarkOpenForUpdate_GOB_20MB_CHACHA20POLY1305(b *testing.B) {
 	RunBenchmarkOpenForUpdate(b, 20480, ccEncryptionKey(), false, true)
+}
+
+func BenchmarkOpenForUpdate_GOB_1KB_TPM_AES(b *testing.B) {
+	RunBenchmarkOpenForUpdate(b, 1, tpmEncryptionKey(), false, true)
+}
+
+func BenchmarkOpenForUpdate_GOB_1MB_TPM_AES(b *testing.B) {
+	RunBenchmarkOpenForUpdate(b, 1024, tpmEncryptionKey(), false, true)
+}
+
+func BenchmarkOpenForUpdate_GOB_10MB_TPM_AES(b *testing.B) {
+	RunBenchmarkOpenForUpdate(b, 10240, tpmEncryptionKey(), false, true)
+}
+
+func BenchmarkOpenForUpdate_GOB_20MB_TPM_AES(b *testing.B) {
+	RunBenchmarkOpenForUpdate(b, 20480, tpmEncryptionKey(), false, true)
 }
 
 func BenchmarkOpenForUpdate_GOB_1KB_PlainText(b *testing.B) {

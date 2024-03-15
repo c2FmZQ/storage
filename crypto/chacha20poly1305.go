@@ -137,6 +137,10 @@ func ReadChacha20Poly1305MasterKey(passphrase []byte, file string, opts ...Optio
 		opt.logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
+	if opt.tpm != nil {
+		opt.logger.Error("ReadMasterKey: TPM option selected but master key was created without TPM")
+		return nil, ErrDecryptFailed
+	}
 	salt, b := b[:16], b[16:]
 	time, b := uint32(b[0]), b[1:]
 	memory, b := binary.LittleEndian.Uint32(b[:4]), b[4:]

@@ -156,8 +156,12 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		opt.logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
+	if version == 1 && opt.tpm != nil {
+		opt.logger.Error("ReadMasterKey: TPM option selected but master key was created without TPM")
+		return nil, ErrDecryptFailed
+	}
 	if version == 3 && opt.tpm == nil {
-		opt.logger.Debug("ReadMasterKey: missing WithTPM option")
+		opt.logger.Error("ReadMasterKey: master key was created with TPM but TPM option not selected")
 		return nil, ErrDecryptFailed
 	}
 	salt := make([]byte, 16)

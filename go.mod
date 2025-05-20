@@ -5,8 +5,8 @@ go 1.23.0
 toolchain go1.24.2
 
 require (
-	github.com/c2FmZQ/tpm v0.4.0
-	github.com/google/go-tpm-tools v0.4.4
+	github.com/c2FmZQ/tpm v0.4.1
+	github.com/google/go-tpm-tools v0.4.5
 	golang.org/x/crypto v0.38.0
 )
 

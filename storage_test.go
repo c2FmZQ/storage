@@ -403,7 +403,7 @@ func RunBenchmarkOpenForUpdate(b *testing.B, kb int, k crypto.EncryptionKey, com
 		}
 		obj.M[string(key)] = string(value)
 	}
-	if err := s.writeFile(context("testfile"), "testfile", &obj); err != nil {
+	if err := s.writeFile(context("testfile", true), "testfile", &obj); err != nil {
 		b.Fatalf("s.writeFile: %v", err)
 	}
 	fi, err := os.Stat(file)

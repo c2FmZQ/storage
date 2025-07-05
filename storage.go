@@ -347,7 +347,7 @@ func (s *Storage) OpenManyForUpdate(files []string, objects interface{}) (func(c
 func context(s string, useSHA2 bool) []byte {
 	if useSHA2 {
 		h := sha256.Sum256([]byte(s))
-		return h[:16]
+		return h[:]
 	}
 	h := sha1.Sum([]byte(s))
 	return h[:]

@@ -30,6 +30,7 @@ import (
 	"compress/gzip"
 	"crypto/rand"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding"
 	"encoding/binary"
 	"encoding/gob"
@@ -62,6 +63,7 @@ const (
 	optEncrypted  = 0x10
 	optCompressed = 0x20
 	optPadded     = 0x40
+	optSHA256     = 0x80
 )
 
 var (
@@ -342,7 +344,11 @@ func (s *Storage) OpenManyForUpdate(files []string, objects interface{}) (func(c
 	}, nil
 }
 
-func context(s string) []byte {
+func context(s string, useSHA2 bool) []byte {
+	if useSHA2 {
+		h := sha256.Sum256([]byte(s))
+		return h[:]
+	}
 	h := sha1.Sum([]byte(s))
 	return h[:]
 }
@@ -363,6 +369,7 @@ func (s *Storage) ReadDataFile(filename string, obj interface{}) error {
 		return errors.New("wrong file type")
 	}
 	flags := hdr[4]
+	useSHA2 := flags&optSHA256 != 0
 	if flags&optEncrypted != 0 && s.masterKey == nil {
 		return errors.New("file is encrypted, but a master key was not provided")
 	}
@@ -376,7 +383,7 @@ func (s *Storage) ReadDataFile(filename string, obj interface{}) error {
 		}
 		defer k.Wipe()
 		// Use the file key to decrypt the rest of the file.
-		if r, err = k.StartReader(context(filename), f); err != nil {
+		if r, err = k.StartReader(context(filename, useSHA2), f); err != nil {
 			return err
 		}
 		// Read the header again.
@@ -463,7 +470,7 @@ func (s *Storage) ReadDataFile(filename string, obj interface{}) error {
 // SaveDataFile atomically replace an object in a file.
 func (s *Storage) SaveDataFile(filename string, obj interface{}) error {
 	t := fmt.Sprintf("%s.tmp-%d", filename, time.Now().UnixNano())
-	if err := s.writeFile(context(filename), t, obj); err != nil {
+	if err := s.writeFile(context(filename, true), t, obj); err != nil {
 		return err
 	}
 	// Atomically replace the file.
@@ -472,7 +479,7 @@ func (s *Storage) SaveDataFile(filename string, obj interface{}) error {
 
 // CreateEmptyFile creates an empty file.
 func (s *Storage) CreateEmptyFile(filename string, empty interface{}) error {
-	return s.writeFile(context(filename), filename, empty)
+	return s.writeFile(context(filename, true), filename, empty)
 }
 
 // writeFile writes obj to a file.
@@ -482,15 +489,15 @@ func (s *Storage) writeFile(ctx []byte, filename string, obj interface{}) (retEr
 		return err
 	}
 
-	var flags byte
+	flags := byte(optSHA256)
 	if _, ok := obj.(encoding.BinaryMarshaler); ok {
-		flags = optBinaryEncoded
+		flags |= optBinaryEncoded
 	} else if _, ok := obj.(*[]byte); ok {
-		flags = optRawBytes
+		flags |= optRawBytes
 	} else if s.useGOB {
-		flags = optGOBEncoded
+		flags |= optGOBEncoded
 	} else {
-		flags = optJSONEncoded
+		flags |= optJSONEncoded
 	}
 	if s.masterKey != nil {
 		flags |= optEncrypted
@@ -563,12 +570,12 @@ func (s *Storage) OpenBlobWrite(writeFileName, finalFileName string) (io.WriteCl
 	if err := createParentIfNotExist(fn); err != nil {
 		return nil, err
 	}
-	var flags byte = optRawBytes
+	var flags byte = optRawBytes | optSHA256
 	if s.masterKey != nil {
 		flags |= optEncrypted
 		flags |= optPadded
 	}
-	return s.openWriteStream(context(finalFileName), fn, flags, 1024*1024)
+	return s.openWriteStream(context(finalFileName, true), fn, flags, 1024*1024)
 }
 
 // OpenBlobRead opens a blob file for reading.
@@ -591,6 +598,7 @@ func (s *Storage) OpenBlobRead(filename string) (stream io.ReadSeekCloser, retEr
 		return nil, errors.New("wrong file type")
 	}
 	flags := hdr[4]
+	useSHA2 := flags&optSHA256 != 0
 	if flags&optRawBytes == 0 {
 		return nil, errors.New("blob files is not raw bytes")
 	}
@@ -610,7 +618,7 @@ func (s *Storage) OpenBlobRead(filename string) (stream io.ReadSeekCloser, retEr
 		}
 		defer k.Wipe()
 		// Use the file key to decrypt the rest of the file.
-		if r, err = k.StartReader(context(filename), f); err != nil {
+		if r, err = k.StartReader(context(filename, useSHA2), f); err != nil {
 			return nil, err
 		}
 		// Read the header again.

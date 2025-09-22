@@ -305,6 +305,7 @@ func (s *Storage) OpenManyForUpdate(files []string, objects interface{}) (func(c
 				var err error
 				if backup, err = s.createBackup(files); err != nil {
 					*errp = err
+					s.UnlockMany(files)
 					return *errp
 				}
 			}

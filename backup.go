@@ -96,6 +96,7 @@ func (b *backup) backup() error {
 		}
 	}
 	if errList != nil {
+		b.delete()
 		return fmt.Errorf("%w %v", errList[0], errList[1:])
 	}
 	return nil

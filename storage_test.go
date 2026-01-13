@@ -108,6 +108,7 @@ func TestOpenForUpdate(t *testing.T) {
 		{"TPM", tpmEncryptionKey()},
 	}
 	for _, tc := range testcases {
+		defer tc.mk.Wipe()
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			fn := "test.json"
@@ -149,7 +150,9 @@ func TestOpenForUpdate(t *testing.T) {
 func TestRollback(t *testing.T) {
 	dir := t.TempDir()
 	fn := "test.json"
-	s := New(dir, aesEncryptionKey())
+	mk := aesEncryptionKey()
+	defer mk.Wipe()
+	s := New(dir, mk)
 
 	type Foo struct {
 		Foo string `json:"foo"`
@@ -185,7 +188,9 @@ func TestRollback(t *testing.T) {
 
 func TestOpenForUpdateDeferredDone(t *testing.T) {
 	dir := t.TempDir()
-	s := New(dir, aesEncryptionKey())
+	mk := aesEncryptionKey()
+	defer mk.Wipe()
+	s := New(dir, mk)
 
 	// This function should return os.ErrNotExist because the file open for
 	// update can't be saved.
@@ -224,6 +229,7 @@ func TestEncodeByteSlice(t *testing.T) {
 		{"TPM", tpmEncryptionKey()},
 	}
 	for _, tc := range testcases {
+		defer tc.mk.Wipe()
 		t.Run(tc.name, func(t *testing.T) {
 			want := []byte("Hello world")
 			dir := t.TempDir()
@@ -255,6 +261,7 @@ func TestEncodeBinary(t *testing.T) {
 		{"TPM", tpmEncryptionKey()},
 	}
 	for _, tc := range testcases {
+		defer tc.mk.Wipe()
 		t.Run(tc.name, func(t *testing.T) {
 			want := time.Now()
 			dir := t.TempDir()
@@ -292,6 +299,7 @@ func TestBlobs(t *testing.T) {
 		{"TPM", tpmEncryptionKey()},
 	}
 	for _, tc := range testcases {
+		defer tc.mk.Wipe()
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			s := New(dir, tc.mk)
@@ -382,6 +390,9 @@ func TestBlobs(t *testing.T) {
 }
 
 func RunBenchmarkOpenForUpdate(b *testing.B, kb int, k crypto.EncryptionKey, compress, useGOB bool) {
+	if k != nil {
+		defer k.Wipe()
+	}
 	dir := b.TempDir()
 	file := filepath.Join(dir, "testfile")
 	s := New(dir, k)
@@ -412,7 +423,7 @@ func RunBenchmarkOpenForUpdate(b *testing.B, kb int, k crypto.EncryptionKey, com
 	}
 	b.ResetTimer()
 	b.SetBytes(fi.Size())
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		commit, err := s.OpenForUpdate("testfile", &obj)
 		if err != nil {
 			b.Fatalf("s.OpenForUpdate: %v", err)
@@ -421,132 +432,111 @@ func RunBenchmarkOpenForUpdate(b *testing.B, kb int, k crypto.EncryptionKey, com
 			b.Fatalf("commit: %v", err)
 		}
 	}
+	b.ReportMetric(1000000000*float64(b.N)/float64(b.Elapsed().Nanoseconds()), "commits/s")
 }
 
-func BenchmarkOpenForUpdate_JSON_1KB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, aesEncryptionKey(), false, false)
-}
+func BenchmarkOpenForUpdate(b *testing.B) {
+	b.Run("JSON 1KB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, aesEncryptionKey(), false, false)
+	})
+	b.Run("JSON 1MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, aesEncryptionKey(), false, false)
+	})
+	b.Run("JSON 10MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, aesEncryptionKey(), false, false)
+	})
+	b.Run("JSON 20MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, aesEncryptionKey(), false, false)
+	})
 
-func BenchmarkOpenForUpdate_JSON_1MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, aesEncryptionKey(), false, false)
-}
+	b.Run("JSON 1KB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, ccEncryptionKey(), false, false)
+	})
+	b.Run("JSON 1MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, ccEncryptionKey(), false, false)
+	})
+	b.Run("JSON 10MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, ccEncryptionKey(), false, false)
+	})
+	b.Run("JSON 20MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, ccEncryptionKey(), false, false)
+	})
 
-func BenchmarkOpenForUpdate_JSON_10MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, aesEncryptionKey(), false, false)
-}
+	b.Run("JSON 1KB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, nil, false, false)
+	})
+	b.Run("JSON 1MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, nil, false, false)
+	})
+	b.Run("JSON 10MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, nil, false, false)
+	})
+	b.Run("JSON 20MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, nil, false, false)
+	})
 
-func BenchmarkOpenForUpdate_JSON_20MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, aesEncryptionKey(), false, false)
-}
+	b.Run("GOB 1KB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, aesEncryptionKey(), false, true)
+	})
+	b.Run("GOB 1MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, aesEncryptionKey(), false, true)
+	})
+	b.Run("GOB 10MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, aesEncryptionKey(), false, true)
+	})
+	b.Run("GOB 20MB AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, aesEncryptionKey(), false, true)
+	})
 
-func BenchmarkOpenForUpdate_JSON_1KB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, ccEncryptionKey(), false, false)
-}
+	b.Run("GOB 1KB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, ccEncryptionKey(), false, true)
+	})
+	b.Run("GOB 1MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, ccEncryptionKey(), false, true)
+	})
+	b.Run("GOB 10MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, ccEncryptionKey(), false, true)
+	})
+	b.Run("GOB 20MB CHACHA20POLY1305", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, ccEncryptionKey(), false, true)
+	})
 
-func BenchmarkOpenForUpdate_JSON_1MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, ccEncryptionKey(), false, false)
-}
+	b.Run("GOB 1KB TPM AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, tpmEncryptionKey(), false, true)
+	})
+	b.Run("GOB 1MB TPM AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, tpmEncryptionKey(), false, true)
+	})
+	b.Run("GOB 10MB TPM AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, tpmEncryptionKey(), false, true)
+	})
+	b.Run("GOB 20MB TPM AES", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, tpmEncryptionKey(), false, true)
+	})
 
-func BenchmarkOpenForUpdate_JSON_10MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, ccEncryptionKey(), false, false)
-}
+	b.Run("GOB 1KB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, nil, false, true)
+	})
+	b.Run("GOB 1MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, nil, false, true)
+	})
+	b.Run("GOB 10MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, nil, false, true)
+	})
+	b.Run("GOB 20MB PlainText", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, nil, false, true)
+	})
 
-func BenchmarkOpenForUpdate_JSON_20MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, ccEncryptionKey(), false, false)
-}
-
-func BenchmarkOpenForUpdate_JSON_1KB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, nil, false, false)
-}
-
-func BenchmarkOpenForUpdate_JSON_1MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, nil, false, false)
-}
-
-func BenchmarkOpenForUpdate_JSON_10MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, nil, false, false)
-}
-
-func BenchmarkOpenForUpdate_JSON_20MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, nil, false, false)
-}
-
-func BenchmarkOpenForUpdate_GOB_1KB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, aesEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, aesEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_10MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, aesEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_20MB_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, aesEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1KB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, ccEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, ccEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_10MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, ccEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_20MB_CHACHA20POLY1305(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, ccEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1KB_TPM_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, tpmEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1MB_TPM_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, tpmEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_10MB_TPM_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, tpmEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_20MB_TPM_AES(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, tpmEncryptionKey(), false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1KB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, nil, false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, nil, false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_10MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, nil, false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_20MB_PlainText(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, nil, false, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1KB_PlainText_GZIP(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1, nil, true, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_1MB_PlainText_GZIP(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 1024, nil, true, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_10MB_PlainText_GZIP(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 10240, nil, true, true)
-}
-
-func BenchmarkOpenForUpdate_GOB_20MB_PlainText_GZIP(b *testing.B) {
-	RunBenchmarkOpenForUpdate(b, 20480, nil, true, true)
+	b.Run("GOB 1KB AES GZIP", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1, aesEncryptionKey(), true, true)
+	})
+	b.Run("GOB 1MB AES GZIP", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 1024, aesEncryptionKey(), true, true)
+	})
+	b.Run("GOB 10MB AES GZIP", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 10240, aesEncryptionKey(), true, true)
+	})
+	b.Run("GOB 20MB AES GZIP", func(b *testing.B) {
+		RunBenchmarkOpenForUpdate(b, 20480, aesEncryptionKey(), true, true)
+	})
 }

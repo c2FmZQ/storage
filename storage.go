@@ -114,6 +114,13 @@ func (s *Storage) Logger() crypto.Logger {
 	return s.logger
 }
 
+// EnableCompression enables or disables compression. Compressed files use less
+// space, but require more CPU to write and read. Compression is not applied to
+// blob files created with [OpenBlobWrite].
+func (s *Storage) EnableCompression(v bool) {
+	s.compress = v
+}
+
 // HashString returns a cryptographically secure hash of a string.
 func (s *Storage) HashString(str string) string {
 	return hex.EncodeToString(s.masterKey.Hash([]byte(str)))
@@ -145,7 +152,7 @@ func (s *Storage) Lock(fn string) error {
 		if err != nil {
 			return err
 		}
-		s.Logger().Debugf("Locked %s", fn)
+		//s.Logger().Debugf("Locked %s", fn)
 		if err := f.Close(); err != nil {
 			return err
 		}
@@ -178,7 +185,7 @@ func (s *Storage) Unlock(fn string) error {
 	if err := os.Remove(lockf); err != nil {
 		return err
 	}
-	s.Logger().Debugf("Unlocked %s", fn)
+	//s.Logger().Debugf("Unlocked %s", fn)
 	return nil
 }
 

@@ -78,26 +78,60 @@ func TestTPMAESMasterKey(t *testing.T) {
 	}
 	defer tpm.Close()
 
-	mk, err := CreateAESMasterKey(WithTPM(tpm))
-	if err != nil {
-		t.Fatalf("CreateMasterKey: %v", err)
-	}
-	defer mk.Wipe()
-	if err := mk.Save(passphrase, keyFile); err != nil {
-		t.Fatalf("mk.Save: %v", err)
-	}
+	t.Run("AES256WithTPMRSA2048", func(t *testing.T) {
+		mk, err := CreateAESMasterKey(WithTPM(tpm))
+		if err != nil {
+			t.Fatalf("CreateMasterKey: %v", err)
+		}
+		defer mk.Wipe()
+		if err := mk.Save(passphrase, keyFile); err != nil {
+			t.Fatalf("mk.Save: %v", err)
+		}
 
-	mk2, err := ReadAESMasterKey(passphrase, keyFile, WithTPM(tpm))
-	if err != nil {
-		t.Fatalf("ReadMasterKey(%q): %v", passphrase, err)
-	}
-	defer mk2.Wipe()
-	if got, want := mk2, mk; !reflect.DeepEqual(want.(*AESMasterKey).key(), got.(*AESMasterKey).key()) {
-		t.Errorf("Mismatch keys: %v != %v", want.(*AESMasterKey).key(), got.(*AESMasterKey).key())
-	}
-	if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
-		t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
-	}
+		mk2, err := ReadAESMasterKey(passphrase, keyFile, WithTPM(tpm))
+		if err != nil {
+			t.Fatalf("ReadMasterKey(%q): %v", passphrase, err)
+		}
+		defer mk2.Wipe()
+		if got, want := mk2, mk; !reflect.DeepEqual(want.(*AESMasterKey).key(), got.(*AESMasterKey).key()) {
+			t.Errorf("Mismatch keys: %v != %v", want.(*AESMasterKey).key(), got.(*AESMasterKey).key())
+		}
+		if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
+			t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
+		}
+	})
+
+	t.Run("AES256WithTPMAESHMAC", func(t *testing.T) {
+		mk, err := CreateAESMasterKey(WithTPM(tpm), WithAlgo(AES256WithTPMAESHMAC))
+		if err != nil {
+			t.Fatalf("CreateMasterKey: %v", err)
+		}
+		defer mk.Wipe()
+		if err := mk.Save(passphrase, keyFile); err != nil {
+			t.Fatalf("mk.Save: %v", err)
+		}
+
+		mk2, err := ReadAESMasterKey(passphrase, keyFile, WithTPM(tpm))
+		if err != nil {
+			t.Fatalf("ReadMasterKey(%q): %v", passphrase, err)
+		}
+		defer mk2.Wipe()
+		const message = "Hello world!"
+		enc, err := mk.Encrypt([]byte(message))
+		if err != nil {
+			t.Fatalf("mk.Encrypt: %v", err)
+		}
+		dec, err := mk2.Decrypt(enc)
+		if err != nil {
+			t.Fatalf("mk.Decrypt: %v", err)
+		}
+		if got, want := string(dec), message; got != want {
+			t.Errorf("Mismatch message: %q != %q", got, want)
+		}
+		if _, err := ReadAESMasterKey([]byte("bar"), keyFile); err == nil {
+			t.Errorf("ReadMasterKey('bar') should have failed, but didn't")
+		}
+	})
 }
 
 func TestAESEncryptDecrypt(t *testing.T) {
@@ -163,30 +197,38 @@ func TestTPMAESEncryptedKey(t *testing.T) {
 	}
 	defer tpm.Close()
 
-	mk, err := CreateAESMasterKey(WithTPM(tpm))
-	if err != nil {
-		t.Fatalf("CreateMasterKey: %v", err)
-	}
-	defer mk.Wipe()
+	for _, alg := range []int{AES256WithTPMRSA2048, AES256WithTPMAESHMAC} {
+		name := "AES256WithTPMRSA2048"
+		if alg == AES256WithTPMAESHMAC {
+			name = "AES256WithTPMAESHMAC"
+		}
+		t.Run(name, func(t *testing.T) {
+			mk, err := CreateAESMasterKey(WithTPM(tpm), WithAlgo(alg))
+			if err != nil {
+				t.Fatalf("CreateMasterKey: %v", err)
+			}
+			defer mk.Wipe()
 
-	ek, err := mk.NewKey()
-	if err != nil {
-		t.Fatalf("mk.NewKey: %v", err)
-	}
-	defer ek.Wipe()
+			ek, err := mk.NewKey()
+			if err != nil {
+				t.Fatalf("mk.NewKey: %v", err)
+			}
+			defer ek.Wipe()
 
-	var buf bytes.Buffer
-	if err := ek.WriteEncryptedKey(&buf); err != nil {
-		t.Fatalf("ek.WriteEncryptedKey: %v", err)
-	}
+			var buf bytes.Buffer
+			if err := ek.WriteEncryptedKey(&buf); err != nil {
+				t.Fatalf("ek.WriteEncryptedKey: %v", err)
+			}
 
-	ek2, err := mk.ReadEncryptedKey(&buf)
-	if err != nil {
-		t.Fatalf("mk.ReadEncryptedKey: %v", err)
-	}
-	defer ek2.Wipe()
-	if want, got := ek.(*AESKey).key(), ek2.(*AESKey).key(); !reflect.DeepEqual(want, got) {
-		t.Errorf("Unexpected key. Want %+v, got %+v", want, got)
+			ek2, err := mk.ReadEncryptedKey(&buf)
+			if err != nil {
+				t.Fatalf("mk.ReadEncryptedKey: %v", err)
+			}
+			defer ek2.Wipe()
+			if want, got := ek.(*AESKey).key(), ek2.(*AESKey).key(); !reflect.DeepEqual(want, got) {
+				t.Errorf("Unexpected key. Want %+v, got %+v", want, got)
+			}
+		})
 	}
 }
 

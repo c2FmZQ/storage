@@ -31,6 +31,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -63,6 +64,7 @@ type AESKey struct {
 	logger     Logger
 	strictWipe bool
 	tpmKey     *tpm.Key
+	tpmHMAC    *tpm.Key
 }
 
 func (k *AESKey) Logger() Logger {
@@ -114,11 +116,30 @@ func CreateAESMasterKey(opts ...Option) (MasterKey, error) {
 	key.strictWipe = opt.strictWipe
 	mk := &AESMasterKey{key}
 	if opt.tpm != nil {
-		tpmkey, err := opt.tpm.CreateKey()
-		if err != nil {
-			return nil, err
+		switch opt.alg {
+		case AES256WithTPMRSA2048:
+			tpmkey, err := opt.tpm.CreateKey()
+			if err != nil {
+				return nil, err
+			}
+			mk.tpmKey = tpmkey
+
+		case AES256WithTPMAESHMAC:
+			tpmkey, err := opt.tpm.CreateKey(tpm.WithAES(256))
+			if err != nil {
+				return nil, err
+			}
+			tpmHMAC, err := opt.tpm.CreateKey(tpm.WithHMAC(256))
+			if err != nil {
+				return nil, err
+			}
+			mk.AESKey = aesKeyFromBytes(make([]byte, 64))
+			mk.tpmKey = tpmkey
+			mk.tpmHMAC = tpmHMAC
+
+		default:
+			return nil, fmt.Errorf("invalid alg for tpm: %d", opt.alg)
 		}
-		mk.tpmKey = tpmkey
 	}
 	return mk, nil
 }
@@ -152,7 +173,7 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 	if !str.ReadUint8(&version) {
 		return nil, ErrDecryptFailed
 	}
-	if version != 1 && version != 3 {
+	if version != 1 && version != 3 && version != 4 {
 		opt.logger.Debugf("ReadMasterKey: unexpected version: %d", version)
 		return nil, ErrDecryptFailed
 	}
@@ -160,7 +181,7 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		opt.logger.Error("ReadMasterKey: TPM option selected but master key was created without TPM")
 		return nil, ErrDecryptFailed
 	}
-	if version == 3 && opt.tpm == nil {
+	if (version == 3 || version == 4) && opt.tpm == nil {
 		opt.logger.Error("ReadMasterKey: master key was created with TPM but TPM option not selected")
 		return nil, ErrDecryptFailed
 	}
@@ -193,9 +214,10 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		return nil, ErrDecryptFailed
 	}
 	var key *AESKey
-	if version == 1 {
+	switch version {
+	case 1:
 		key = aesKeyFromBytes(mkBytes)
-	} else { // version == 3
+	case 3:
 		str := cryptobyte.String(mkBytes)
 		var length uint16
 		if !str.ReadUint16(&length) {
@@ -223,6 +245,30 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		}
 		key = aesKeyFromBytes(decKey)
 		key.tpmKey = tpmKey
+
+	case 4:
+		str := cryptobyte.String(mkBytes)
+		var aesCtx, hmacCtx []byte
+		if !str.ReadUint16LengthPrefixed((*cryptobyte.String)(&aesCtx)) {
+			return nil, ErrDecryptFailed
+		}
+		if !str.ReadUint16LengthPrefixed((*cryptobyte.String)(&hmacCtx)) {
+			return nil, ErrDecryptFailed
+		}
+		tpmKey, err := opt.tpm.UnmarshalKey(aesCtx)
+		if err != nil {
+			return nil, err
+		}
+		tpmHMAC, err := opt.tpm.UnmarshalKey(hmacCtx)
+		if err != nil {
+			return nil, err
+		}
+		key = aesKeyFromBytes(make([]byte, 32))
+		key.tpmKey = tpmKey
+		key.tpmHMAC = tpmHMAC
+
+	default:
+		return nil, fmt.Errorf("unexpected master key version: %d", version)
 	}
 	key.logger = opt.logger
 	key.strictWipe = opt.strictWipe
@@ -260,7 +306,7 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 	if mk.tpmKey == nil {
 		version = 1
 		payload = mk.key()
-	} else {
+	} else if mk.tpmHMAC == nil {
 		version = 3
 		buf := cryptobyte.NewBuilder(nil)
 		// encKey, err := mk.tpmKey.Encrypt(mk.key())
@@ -278,6 +324,29 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 		}
 		buf.AddUint16(uint16(len(keyctx)))
 		buf.AddBytes(keyctx)
+		if payload, err = buf.Bytes(); err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+	} else {
+		version = 4
+		aesCtx, err := mk.tpmKey.Marshal()
+		if err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+		hmacCtx, err := mk.tpmHMAC.Marshal()
+		if err != nil {
+			mk.Logger().Debug(err)
+			return ErrEncryptFailed
+		}
+		buf := cryptobyte.NewBuilder(nil)
+		buf.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(aesCtx)
+		})
+		buf.AddUint16LengthPrefixed(func(b *cryptobyte.Builder) {
+			b.AddBytes(hmacCtx)
+		})
 		if payload, err = buf.Bytes(); err != nil {
 			mk.Logger().Debug(err)
 			return ErrEncryptFailed
@@ -304,11 +373,22 @@ func (mk AESMasterKey) Save(passphrase []byte, file string) error {
 }
 
 func (k AESKey) key() []byte {
+	if k.tpmHMAC != nil {
+		// This should never happen.
+		panic("key() called with AES256WithTPMAESHMAC")
+	}
 	return k.xor(k.maskedKey)
 }
 
 // Hash returns the HMAC-SHA256 hash of b.
 func (k AESKey) Hash(b []byte) []byte {
+	if k.tpmHMAC != nil {
+		h, err := k.tpmHMAC.HMAC(b)
+		if err != nil {
+			panic(err)
+		}
+		return h
+	}
 	mac := hmac.New(sha256.New, k.key()[32:])
 	mac.Write(b)
 	return mac.Sum(nil)
@@ -322,13 +402,23 @@ func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 			return nil, ErrDecryptFailed
 		}
 		version, data := data[0], data[1:]
-		if version != 3 {
-			return nil, ErrDecryptFailed
-		}
 		encData, data := data[:len(data)-sigSize], data[len(data)-sigSize:]
-		sig := data[:sigSize]
-		hashed := sha256.Sum256(encData)
-		if err := rsa.VerifyPKCS1v15(k.tpmKey.Public().(*rsa.PublicKey), crypto.SHA256, hashed[:], sig); err != nil {
+		switch version {
+		case 3:
+			sig := data[:sigSize]
+			hashed := sha256.Sum256(encData)
+			if err := rsa.VerifyPKCS1v15(k.tpmKey.Public().(*rsa.PublicKey), crypto.SHA256, hashed[:], sig); err != nil {
+				return nil, ErrDecryptFailed
+			}
+		case 4:
+			h, err := k.tpmHMAC.HMAC(encData)
+			if err != nil {
+				return nil, ErrDecryptFailed
+			}
+			if subtle.ConstantTimeCompare(h, data[:sigSize]) != 1 {
+				return nil, ErrDecryptFailed
+			}
+		default:
 			return nil, ErrDecryptFailed
 		}
 		return k.tpmKey.Decrypt(nil, encData, nil)
@@ -371,18 +461,34 @@ func (k AESKey) Decrypt(data []byte) ([]byte, error) {
 // Encrypt encrypts data using the key.
 func (k AESKey) Encrypt(data []byte) ([]byte, error) {
 	if k.tpmKey != nil {
-		// encData, err := k.tpmKey.Encrypt(data)
-		encData, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, k.tpmKey.Public().(*rsa.PublicKey), data, nil)
+		if k.tpmHMAC == nil { // version 3
+			// encData, err := k.tpmKey.Encrypt(data)
+			encData, err := rsa.EncryptOAEP(sha256.New(), rand.Reader, k.tpmKey.Public().(*rsa.PublicKey), data, nil)
+			if err != nil {
+				return nil, ErrEncryptFailed
+			}
+			hashed := sha256.Sum256(encData)
+			sig, err := k.tpmKey.Sign(nil, hashed[:], crypto.SHA256)
+			if err != nil {
+				return nil, ErrEncryptFailed
+			}
+			out := make([]byte, 1+len(encData)+len(sig))
+			out[0] = 3 // version
+			copy(out[1:], encData)
+			copy(out[1+len(encData):], sig)
+			return out, nil
+		}
+		// version 4
+		encData, err := k.tpmKey.Encrypt(data)
 		if err != nil {
 			return nil, ErrEncryptFailed
 		}
-		hashed := sha256.Sum256(encData)
-		sig, err := k.tpmKey.Sign(nil, hashed[:], crypto.SHA256)
+		sig, err := k.tpmHMAC.HMAC(encData)
 		if err != nil {
 			return nil, ErrEncryptFailed
 		}
 		out := make([]byte, 1+len(encData)+len(sig))
-		out[0] = 3 // version
+		out[0] = 4 // version
 		copy(out[1:], encData)
 		copy(out[1+len(encData):], sig)
 		return out, nil
@@ -461,6 +567,9 @@ func (k AESKey) NewKey() (EncryptionKey, error) {
 }
 
 func (k AESKey) keysize() int {
+	if k.tpmHMAC != nil {
+		return 113
+	}
 	if k.tpmKey != nil {
 		return 2*k.tpmKey.Bits()/8 + 1
 	}

@@ -263,7 +263,7 @@ func ReadAESMasterKey(passphrase []byte, file string, opts ...Option) (MasterKey
 		if err != nil {
 			return nil, err
 		}
-		key = aesKeyFromBytes(make([]byte, 32))
+		key = aesKeyFromBytes(make([]byte, 64))
 		key.tpmKey = tpmKey
 		key.tpmHMAC = tpmHMAC
 
@@ -568,7 +568,7 @@ func (k AESKey) NewKey() (EncryptionKey, error) {
 
 func (k AESKey) keysize() int {
 	if k.tpmHMAC != nil {
-		return 113
+		return 113 // 1 (version) + 80 (iv + encrypted 64-byte key) + 32 (HMAC-SHA256 tag)
 	}
 	if k.tpmKey != nil {
 		return 2*k.tpmKey.Bits()/8 + 1

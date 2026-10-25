@@ -90,7 +90,7 @@ func New(dir string, masterKey crypto.EncryptionKey) *Storage {
 		s.logger = crypto.StdLogger()
 	}
 	if err := s.rollbackPendingOps(); err != nil {
-		masterKey.Logger().Fatalf("s.rollbackPendingOps: %v", err)
+		s.logger.Fatalf("s.rollbackPendingOps: %v", err)
 	}
 	return s
 }
@@ -308,38 +308,43 @@ func (s *Storage) OpenManyForUpdate(files []string, objects interface{}) (func(c
 			// If the process dies in the middle of saving the data, the backup will be
 			// restored automatically when the process restarts. See New().
 			var backup *backup
+			var err error
 			if len(files) > 1 {
-				var err error
 				if backup, err = s.createBackup(files); err != nil {
 					*errp = err
-					s.UnlockMany(files)
-					return *errp
 				}
 			}
-			ch := make(chan error)
+			if err == nil {
+				ch := make(chan error)
+				for i := range files {
+					go func(file string, obj interface{}) {
+						ch <- s.SaveDataFile(file, obj)
+					}(files[i], objValue.Index(i).Interface())
+				}
+				var errorList []error
+				for _ = range files {
+					if err := <-ch; err != nil {
+						errorList = append(errorList, err)
+					}
+				}
+				if errorList != nil {
+					if backup != nil {
+						backup.restore()
+					}
+					if *errp == nil {
+						*errp = fmt.Errorf("s.SaveDataFile: %w %v", errorList[0], errorList[1:])
+					}
+				} else {
+					if backup != nil {
+						backup.delete()
+					}
+					committed = true
+				}
+			}
+		}
+		if !committed {
 			for i := range files {
-				go func(file string, obj interface{}) {
-					ch <- s.SaveDataFile(file, obj)
-				}(files[i], objValue.Index(i).Interface())
-			}
-			var errorList []error
-			for _ = range files {
-				if err := <-ch; err != nil {
-					errorList = append(errorList, err)
-				}
-			}
-			if errorList != nil {
-				if backup != nil {
-					backup.restore()
-				}
-				if *errp == nil {
-					*errp = fmt.Errorf("s.SaveDataFile: %w %v", errorList[0], errorList[1:])
-				}
-			} else {
-				if backup != nil {
-					backup.delete()
-				}
-				committed = true
+				s.ReadDataFile(files[i], objValue.Index(i).Interface())
 			}
 		}
 		if err := s.UnlockMany(files); err != nil && *errp == nil {
@@ -422,12 +427,18 @@ func (s *Storage) ReadDataFile(filename string, obj interface{}) error {
 	switch enc := flags & optEncodingMask; enc {
 	case optGOBEncoded:
 		// Decode with GOB.
+		if v := reflect.ValueOf(obj); v.Kind() == reflect.Ptr && !v.IsNil() {
+			v.Elem().Set(reflect.Zero(v.Elem().Type()))
+		}
 		if err := gob.NewDecoder(rc).Decode(obj); err != nil {
 			s.Logger().Debugf("gob Decode: %v", err)
 			return err
 		}
 	case optJSONEncoded:
 		// Decode JSON object.
+		if v := reflect.ValueOf(obj); v.Kind() == reflect.Ptr && !v.IsNil() {
+			v.Elem().Set(reflect.Zero(v.Elem().Type()))
+		}
 		if err := json.NewDecoder(rc).Decode(obj); err != nil {
 			s.Logger().Debugf("json Decode: %v", err)
 			return err
@@ -450,6 +461,9 @@ func (s *Storage) ReadDataFile(filename string, obj interface{}) error {
 		b, ok := obj.(*[]byte)
 		if !ok {
 			return fmt.Errorf("obj isn't *[]byte: %T", obj)
+		}
+		if b != nil {
+			*b = (*b)[:0]
 		}
 		buf := make([]byte, 1024)
 		for {
@@ -482,7 +496,11 @@ func (s *Storage) SaveDataFile(filename string, obj interface{}) error {
 		return err
 	}
 	// Atomically replace the file.
-	return os.Rename(filepath.Join(s.dir, t), filepath.Join(s.dir, filename))
+	if err := os.Rename(filepath.Join(s.dir, t), filepath.Join(s.dir, filename)); err != nil {
+		os.Remove(filepath.Join(s.dir, t))
+		return err
+	}
+	return nil
 }
 
 // CreateEmptyFile creates an empty file.
@@ -522,6 +540,9 @@ func (s *Storage) writeFile(ctx []byte, filename string, obj interface{}) (retEr
 	defer func() {
 		if err := w.Close(); err != nil && retErr == nil {
 			retErr = err
+		}
+		if retErr != nil {
+			os.Remove(fn)
 		}
 	}()
 
@@ -672,16 +693,21 @@ func (w *seekWrapper) Seek(offset int64, whence int) (newOffset int64, err error
 }
 
 // openWriteStream opens a write stream.
-func (s *Storage) openWriteStream(ctx []byte, fullPath string, flags byte, maxPadding int) (io.WriteCloser, error) {
+func (s *Storage) openWriteStream(ctx []byte, fullPath string, flags byte, maxPadding int) (wc io.WriteCloser, retErr error) {
 	f, err := os.OpenFile(fullPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL|os.O_SYNC, 0600)
 	if err != nil {
 		return nil, err
 	}
+	var w io.WriteCloser = f
+	defer func() {
+		if retErr != nil {
+			w.Close()
+			os.Remove(fullPath)
+		}
+	}()
 	if _, err := f.Write([]byte{'K', 'R', 'I', 'N', flags}); err != nil {
-		f.Close()
 		return nil, err
 	}
-	var w io.WriteCloser = f
 	if flags&optEncrypted != 0 {
 		k, err := s.masterKey.NewKey()
 		if err != nil {
@@ -690,17 +716,16 @@ func (s *Storage) openWriteStream(ctx []byte, fullPath string, flags byte, maxPa
 		defer k.Wipe()
 		// Write the encrypted file key first.
 		if err := k.WriteEncryptedKey(f); err != nil {
-			f.Close()
 			return nil, err
 		}
 		// Use the file key to encrypt the rest of the file.
-		if w, err = k.StartWriter(ctx, f); err != nil {
-			f.Close()
+		ew, err := k.StartWriter(ctx, f)
+		if err != nil {
 			return nil, err
 		}
+		w = ew
 		// Write the header again.
 		if _, err := w.Write([]byte{'K', 'R', 'I', 'N', flags}); err != nil {
-			w.Close()
 			return nil, err
 		}
 		if flags&optPadded != 0 {
@@ -709,7 +734,7 @@ func (s *Storage) openWriteStream(ctx []byte, fullPath string, flags byte, maxPa
 			}
 		}
 	}
-	var wc io.WriteCloser = w
+	wc = w
 	if flags&optCompressed != 0 {
 		// Compress the content.
 		gz, err := gzip.NewWriterLevel(w, gzip.BestSpeed)

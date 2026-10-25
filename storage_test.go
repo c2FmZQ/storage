@@ -155,9 +155,13 @@ func TestRollback(t *testing.T) {
 	s := New(dir, mk)
 
 	type Foo struct {
-		Foo string `json:"foo"`
+		Foo string            `json:"foo"`
+		Map map[string]string `json:"map"`
 	}
-	foo := Foo{"foo"}
+	foo := Foo{
+		Foo: "foo",
+		Map: map[string]string{"a": "1", "b": "2"},
+	}
 	if err := s.SaveDataFile(fn, foo); err != nil {
 		t.Fatalf("s.SaveDataFile failed: %v", err)
 	}
@@ -170,8 +174,13 @@ func TestRollback(t *testing.T) {
 		t.Fatalf("s.OpenForUpdate() got %+v, want %+v", bar, foo)
 	}
 	bar.Foo = "bar"
+	delete(bar.Map, "a")
+	bar.Map["c"] = "3"
 	if err := commit(false, nil); err != ErrRolledBack {
 		t.Errorf("unexpected error. Want %v, got %v", ErrRolledBack, err)
+	}
+	if !reflect.DeepEqual(foo, bar) {
+		t.Errorf("in-memory object after rollback got %+v, want %+v", bar, foo)
 	}
 	if err := commit(true, nil); err != ErrAlreadyRolledBack {
 		t.Errorf("unexpected error. Want %v, got %v", ErrAlreadyRolledBack, err)
@@ -183,6 +192,162 @@ func TestRollback(t *testing.T) {
 	}
 	if !reflect.DeepEqual(foo, foo2) {
 		t.Fatalf("s.OpenForUpdate() got %+v, want %+v", foo2, foo)
+	}
+}
+
+func TestOpenManyForUpdateRollback(t *testing.T) {
+	dir := t.TempDir()
+	mk := aesEncryptionKey()
+	defer mk.Wipe()
+	s := New(dir, mk)
+
+	type Data struct {
+		Name string            `json:"name"`
+		Map  map[string]string `json:"map"`
+	}
+	want1 := Data{Name: "one", Map: map[string]string{"k1": "v1"}}
+	want2 := Data{Name: "two", Map: map[string]string{"k2": "v2"}}
+	if err := s.SaveDataFile("file1", want1); err != nil {
+		t.Fatalf("s.SaveDataFile(file1) failed: %v", err)
+	}
+	if err := s.SaveDataFile("file2", want2); err != nil {
+		t.Fatalf("s.SaveDataFile(file2) failed: %v", err)
+	}
+
+	var got1, got2 Data
+	commit, err := s.OpenManyForUpdate([]string{"file1", "file2"}, []interface{}{&got1, &got2})
+	if err != nil {
+		t.Fatalf("s.OpenManyForUpdate failed: %v", err)
+	}
+	got1.Name = "mutated1"
+	got1.Map["extra"] = "val"
+	got2.Name = "mutated2"
+	delete(got2.Map, "k2")
+
+	if err := commit(false, nil); err != ErrRolledBack {
+		t.Errorf("unexpected error. Want %v, got %v", ErrRolledBack, err)
+	}
+	if !reflect.DeepEqual(want1, got1) {
+		t.Errorf("got1 after rollback = %+v, want %+v", got1, want1)
+	}
+	if !reflect.DeepEqual(want2, got2) {
+		t.Errorf("got2 after rollback = %+v, want %+v", got2, want2)
+	}
+}
+
+func TestReadDataFileReuse(t *testing.T) {
+	for _, useGOB := range []bool{true, false} {
+		name := "JSON"
+		if useGOB {
+			name = "GOB"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			mk := aesEncryptionKey()
+			defer mk.Wipe()
+			s := New(dir, mk)
+			s.useGOB = useGOB
+
+			type Doc struct {
+				Title string            `json:"title"`
+				Items map[string]string `json:"items"`
+			}
+
+			first := Doc{
+				Title: "first",
+				Items: map[string]string{"a": "1", "b": "2"},
+			}
+			if err := s.SaveDataFile("doc", first); err != nil {
+				t.Fatalf("SaveDataFile(first) failed: %v", err)
+			}
+
+			var target Doc
+			if err := s.ReadDataFile("doc", &target); err != nil {
+				t.Fatalf("ReadDataFile(first) failed: %v", err)
+			}
+			if !reflect.DeepEqual(first, target) {
+				t.Fatalf("ReadDataFile(first) got %+v, want %+v", target, first)
+			}
+
+			second := Doc{
+				Title: "second",
+				Items: map[string]string{"b": "20", "c": "3"},
+			}
+			if err := s.SaveDataFile("doc", second); err != nil {
+				t.Fatalf("SaveDataFile(second) failed: %v", err)
+			}
+
+			// Re-read into the same target struct. Key "a" must not persist.
+			if err := s.ReadDataFile("doc", &target); err != nil {
+				t.Fatalf("ReadDataFile(second) failed: %v", err)
+			}
+			if !reflect.DeepEqual(second, target) {
+				t.Errorf("ReadDataFile(second) got %+v, want %+v", target, second)
+			}
+		})
+	}
+
+	t.Run("RawBytes", func(t *testing.T) {
+		dir := t.TempDir()
+		mk := aesEncryptionKey()
+		defer mk.Wipe()
+		s := New(dir, mk)
+
+		first := []byte("first payload")
+		if err := s.SaveDataFile("raw", &first); err != nil {
+			t.Fatalf("SaveDataFile(first) failed: %v", err)
+		}
+		var buf []byte
+		if err := s.ReadDataFile("raw", &buf); err != nil {
+			t.Fatalf("ReadDataFile(first) failed: %v", err)
+		}
+		if !reflect.DeepEqual(first, buf) {
+			t.Fatalf("ReadDataFile(first) got %q, want %q", buf, first)
+		}
+
+		second := []byte("second")
+		if err := s.SaveDataFile("raw", &second); err != nil {
+			t.Fatalf("SaveDataFile(second) failed: %v", err)
+		}
+		if err := s.ReadDataFile("raw", &buf); err != nil {
+			t.Fatalf("ReadDataFile(second) failed: %v", err)
+		}
+		if !reflect.DeepEqual(second, buf) {
+			t.Errorf("ReadDataFile(second) got %q, want %q", buf, second)
+		}
+	})
+}
+
+func TestSaveDataFileErrorCleanup(t *testing.T) {
+	for _, useGOB := range []bool{true, false} {
+		name := "JSON"
+		if useGOB {
+			name = "GOB"
+		}
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			mk := aesEncryptionKey()
+			defer mk.Wipe()
+			s := New(dir, mk)
+			s.useGOB = useGOB
+
+			bad := struct {
+				Ch chan int
+			}{
+				Ch: make(chan int),
+			}
+			if err := s.SaveDataFile("badfile", bad); err == nil {
+				t.Fatal("SaveDataFile succeeded unexpectedly for unencodable value")
+			}
+
+			matches, err := filepath.Glob(filepath.Join(dir, "badfile.tmp-*"))
+			if err != nil {
+				t.Fatalf("filepath.Glob failed: %v", err)
+			}
+			if len(matches) != 0 {
+				t.Errorf("found leftover temporary files: %v", matches)
+			}
+		})
 	}
 }
 
